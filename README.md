@@ -341,5 +341,3 @@ You’re helping define what *civilized* machine intelligence looks like.
 The future belongs to the dancers, not the sprinters.
 
 ```
-
----
