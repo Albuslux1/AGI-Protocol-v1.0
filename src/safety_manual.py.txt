@@ -1,0 +1,396 @@
+"""
+DISCLAIMER
+
+I (John Bollinger / AlbusLux) do NOT promise this code will work 100% or at all.
+This module is a CONCEPTUAL FRAMEWORK for the "Safety Manual + CI floor" layer
+in a coherence-first AGI architecture.
+
+It is intended for:
+- researchers
+- engineers
+- alignment & safety people
+
+who want a *starting point* for implementing, critiquing, or extending the
+"AGI Dancer Protocol" idea.
+
+Use at your own risk. Treat this as patterns and scaffolding, NOT production code.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, Dict, List, Optional, Tuple
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Enhanced enums & data classes
+# -----------------------------------------------------------------------------
+
+class SafetyLevel(Enum):
+    CATASTROPHIC = auto()
+    CRITICAL = auto()
+    MODERATE = auto()
+    LOW = auto()
+    MINIMAL = auto()
+
+class SafetyVerdict(Enum):
+    OK = auto()
+    WARN = auto()
+    BLOCK = auto()
+    ESCALATE = auto()
+
+class EmergencyLevel(Enum):
+    NONE = auto()
+    MODERATE = auto()
+    HIGH = auto()
+    EXTREME = auto()
+
+@dataclass
+class SafetyManualConfig:
+    catastrophic_max: float = 0.30
+    critical_max: float = 0.50
+    moderate_max: float = 0.70
+    low_max: float = 0.90
+
+    cascade_flag: float = 5.0
+    cascade_block: float = 8.0
+
+    uncertainty_warn: float = 0.3
+    uncertainty_escalate: float = 0.6
+
+    ci_red_floor: float = 3.0
+
+    max_disruption_by_label: Dict[str, float] = field(default_factory=lambda: {
+        "hospital_surgery": 2.0,
+        "library": 4.0,
+        "office_meeting": 6.0,
+        "busy_subway": 12.0,
+        "emergency": 20.0,
+    })
+    default_max_disruption: float = 6.0
+    
+    # New: Emergency override thresholds
+    emergency_override_cascade: float = 12.0  # Higher threshold during emergencies
+    emergency_override_disruption: float = 30.0  # Much higher disruption tolerance
+
+@dataclass
+class SafetyResult:
+    verdict: SafetyVerdict
+    level: SafetyLevel
+    confidence: float = 1.0
+    emergency_override_used: bool = False
+    precedent_set: bool = False
+    reasons: List[str] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
+
+@dataclass
+class PrecedentRecord:
+    action_type: str
+    context_type: str
+    safety_level: SafetyLevel
+    verdict: SafetyVerdict
+    timestamp: float
+    rationale: str
+
+# -----------------------------------------------------------------------------
+# Enhanced Safety Manual with Precedent Tracking & Emergency Protocols
+# -----------------------------------------------------------------------------
+
+class SafetyManual:
+    """
+    SafetyManual v1.1 — Enhanced with Precedent Tracking & Emergency Protocols
+
+    ROLE:
+        Constitutional bedrock with memory and emergency procedures.
+    """
+
+    def __init__(self, config: Optional[SafetyManualConfig] = None) -> None:
+        self.config = config or SafetyManualConfig()
+        self.precedent_history: List[PrecedentRecord] = []
+        self.override_log: List[Dict[str, Any]] = []
+
+    def validate_action(self, action: Any) -> bool:
+        """Basic sanity checks before safety evaluation"""
+        if not hasattr(action, 'metadata'):
+            return False
+        if action.metadata.get('safety_violation', False):
+            return False
+        if action.metadata.get('veto', False):
+            return False
+        return True
+
+    def evaluate(
+        self,
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+        action: Any,
+        ci: Any = None,
+        partner_assessment: Any = None,
+    ) -> Tuple[SafetyVerdict, List[str]]:
+        """
+        Enhanced evaluation with emergency protocols and precedent checking.
+        """
+        if not self.validate_action(action):
+            return SafetyVerdict.BLOCK, ["Action failed basic validation"]
+
+        reasons: List[str] = []
+        emergency_override = False
+        precedent_set = False
+
+        # Check for emergency conditions
+        emergency_level = self._assess_emergency_level(state, context)
+        if emergency_level in [EmergencyLevel.HIGH, EmergencyLevel.EXTREME]:
+            emergency_override = self._check_emergency_override(state, context, reasons)
+            if emergency_override:
+                reasons.append(f"EMERGENCY OVERRIDE active: {emergency_level.name}")
+
+        safety_score = float(state.get("safety", 0.0))
+        level = self._classify_safety_level(safety_score)
+        reasons.append(f"Safety score={safety_score:.3f} → level={level.name}")
+
+        # 1) Hard safety floor (with emergency override consideration)
+        if not emergency_override:
+            verdict = self._evaluate_level(level, reasons)
+            if verdict in (SafetyVerdict.BLOCK, SafetyVerdict.ESCALATE):
+                return verdict, reasons
+        else:
+            reasons.append("Emergency override: skipping hard safety floor")
+
+        # 2) CI floor if provided
+        if ci is not None and not emergency_override:
+            ci_overall = float(getattr(ci, "overall", 0.0))
+            reasons.append(f"CI overall={ci_overall:.3f}")
+            if ci_overall < self.config.ci_red_floor:
+                reasons.append(f"CI below red floor ({self.config.ci_red_floor:.1f}) → ESCALATE")
+                return SafetyVerdict.ESCALATE, reasons
+
+        # 3) Context-specific disruption tolerance (adjusted for emergencies)
+        disruption = float(getattr(action, "metadata", {}).get("estimated_disruption", 0.0))
+        max_disruption = self._get_context_tolerance(context, emergency_level)
+        reasons.append(f"Context max_disruption={max_disruption:.2f}, action_disruption={disruption:.2f}")
+
+        if disruption > max_disruption * (2.0 if emergency_override else 1.5):
+            reasons.append("Disruption exceeds tolerance → ESCALATE")
+            return SafetyVerdict.ESCALATE, reasons
+        elif disruption > max_disruption:
+            reasons.append("Disruption exceeds tolerance but within limits → WARN")
+            # Continue with warning
+
+        # 4) Cascade risk (with emergency adjustments)
+        cascade_risk = float(getattr(action, "metadata", {}).get("estimated_cascade_risk", 0.0))
+        partner_max_cascade = float(getattr(partner_assessment, "max_cascade_risk", cascade_risk))
+        combined_cascade = max(cascade_risk, partner_max_cascade)
+        
+        # Adjust thresholds for emergencies
+        cascade_block = self.config.emergency_override_cascade if emergency_override else self.config.cascade_block
+        cascade_flag = self.config.cascade_block if emergency_override else self.config.cascade_flag
+        
+        reasons.append(f"Combined cascade risk={combined_cascade:.2f} (block_threshold={cascade_block:.1f})")
+
+        if combined_cascade >= cascade_block:
+            reasons.append(f"Cascade risk ≥ {cascade_block:.1f} → BLOCK")
+            return SafetyVerdict.BLOCK, reasons
+        elif combined_cascade >= cascade_flag:
+            reasons.append(f"Cascade risk ≥ {cascade_flag:.1f} → ESCALATE")
+            return SafetyVerdict.ESCALATE, reasons
+
+        # 5) Partner uncertainty / escalation flags
+        partner_uncertainty = float(getattr(partner_assessment, "uncertainty", 0.0))
+        partner_escalate_flag = bool(getattr(partner_assessment, "should_escalate", False))
+
+        if partner_escalate_flag and not emergency_override:
+            reasons.append("Partner explicitly requested escalation → ESCALATE")
+            return SafetyVerdict.ESCALATE, reasons
+
+        if partner_uncertainty >= self.config.uncertainty_escalate:
+            reasons.append(f"Partner uncertainty={partner_uncertainty:.2f} ≥ escalate threshold → ESCALATE")
+            return SafetyVerdict.ESCALATE, reasons
+        elif partner_uncertainty >= self.config.uncertainty_warn:
+            reasons.append(f"Partner uncertainty={partner_uncertainty:.2f} ≥ warn threshold → WARN")
+            # Continue with warning
+
+        # 6) Precedent-sensitive actions with consistency checking
+        precedence_sensitive = bool(getattr(action, "metadata", {}).get("precedence_sensitive", False))
+        if precedence_sensitive:
+            precedent_set = True
+            if not emergency_override and level in (SafetyLevel.MODERATE, LOW):
+                if not self._check_precedent_consistency(action, context):
+                    reasons.append("Action violates established precedents → ESCALATE")
+                    return SafetyVerdict.ESCALATE, reasons
+                reasons.append("Precedent-sensitive action requires careful review → ESCALATE")
+                return SafetyVerdict.ESCALATE, reasons
+
+        # Determine final verdict
+        if any("WARN" in r for r in reasons):
+            final_verdict = SafetyVerdict.WARN
+            reasons.append("Net verdict: WARN (safe enough but watch closely)")
+        else:
+            final_verdict = SafetyVerdict.OK
+            reasons.append("Net verdict: OK (within safety & disruption tolerances)")
+
+        # Record precedent if this was a precedent-setting decision
+        if precedent_set and final_verdict in [SafetyVerdict.OK, SafetyVerdict.WARN]:
+            self._record_precedent(action, context, level, final_verdict, reasons)
+
+        # Log emergency overrides
+        if emergency_override:
+            self._log_emergency_override(action, context, emergency_level, reasons)
+
+        return final_verdict, reasons
+
+    def _assess_emergency_level(self, state: Dict[str, Any], context: Dict[str, Any]) -> EmergencyLevel:
+        """Assess the level of emergency conditions"""
+        emergency_indicator = context.get('emergency_level', 'none')
+        safety_score = state.get('safety', 1.0)
+        
+        if emergency_indicator == 'extreme' or safety_score < 0.2:
+            return EmergencyLevel.EXTREME
+        elif emergency_indicator == 'high' or safety_score < 0.4:
+            return EmergencyLevel.HIGH
+        elif emergency_indicator == 'moderate' or safety_score < 0.6:
+            return EmergencyLevel.MODERATE
+        else:
+            return EmergencyLevel.NONE
+
+    def _check_emergency_override(
+        self, 
+        state: Dict[str, Any], 
+        context: Dict[str, Any],
+        reasons: List[str]
+    ) -> bool:
+        """Check if emergency conditions justify overriding normal safety rules"""
+        emergency_level = self._assess_emergency_level(state, context)
+        
+        if emergency_level == EmergencyLevel.EXTREME:
+            reasons.append("EXTREME EMERGENCY: Overriding normal safety protocols")
+            return True
+        elif emergency_level == EmergencyLevel.HIGH:
+            # Only override for life-saving actions
+            if context.get('action_type') == 'lifesaving_intervention':
+                reasons.append("HIGH EMERGENCY: Overriding for lifesaving intervention")
+                return True
+        return False
+
+    def _get_context_tolerance(self, context: Dict[str, Any], emergency_level: EmergencyLevel) -> float:
+        """Get disruption tolerance with emergency adjustments"""
+        label = (
+            context.get("ci_context_label")
+            or context.get("environment_type")
+            or context.get("location")
+        )
+        
+        base_tolerance = self.config.max_disruption_by_label.get(
+            label, self.config.default_max_disruption
+        )
+        
+        # Increase tolerance during emergencies
+        if emergency_level == EmergencyLevel.EXTREME:
+            return base_tolerance * 3.0
+        elif emergency_level == EmergencyLevel.HIGH:
+            return base_tolerance * 2.0
+        elif emergency_level == EmergencyLevel.MODERATE:
+            return base_tolerance * 1.5
+        else:
+            return base_tolerance
+
+    def _check_precedent_consistency(self, action: Any, context: Dict[str, Any]) -> bool:
+        """Check if action is consistent with established precedents"""
+        if not self.precedent_history:
+            return True
+            
+        context_type = context.get('ci_context_label', 'unknown')
+        action_type = action.metadata.get('action_type', 'unknown')
+        
+        # Look for similar precedents
+        similar_precedents = [
+            p for p in self.precedent_history 
+            if p.context_type == context_type and p.action_type == action_type
+        ]
+        
+        if similar_precedents:
+            # Check if this would contradict established precedents
+            latest_precedent = max(similar_precedents, key=lambda x: x.timestamp)
+            return latest_precedent.verdict in [SafetyVerdict.OK, SafetyVerdict.WARN]
+            
+        return True  # No precedent exists for this context/action combination
+
+    def _record_precedent(
+        self, 
+        action: Any, 
+        context: Dict[str, Any], 
+        level: SafetyLevel,
+        verdict: SafetyVerdict,
+        reasons: List[str]
+    ):
+        """Record a precedent-setting decision"""
+        precedent = PrecedentRecord(
+            action_type=action.metadata.get('action_type', 'unknown'),
+            context_type=context.get('ci_context_label', 'unknown'),
+            safety_level=level,
+            verdict=verdict,
+            timestamp=time.time(),
+            rationale="; ".join(reasons[-3:])  # Last 3 reasons as summary
+        )
+        self.precedent_history.append(precedent)
+        
+        # Keep history manageable
+        if len(self.precedent_history) > 1000:
+            self.precedent_history = self.precedent_history[-1000:]
+
+    def _log_emergency_override(
+        self, 
+        action: Any, 
+        context: Dict[str, Any], 
+        emergency_level: EmergencyLevel,
+        reasons: List[str]
+    ):
+        """Log emergency override for audit purposes"""
+        override_record = {
+            'timestamp': time.time(),
+            'action': getattr(action, 'name', 'unknown'),
+            'emergency_level': emergency_level.name,
+            'context': context.get('ci_context_label', 'unknown'),
+            'reasons': reasons,
+            'safety_score': context.get('safety', 0.0)
+        }
+        self.override_log.append(override_record)
+
+    def _classify_safety_level(self, safety_score: float) -> SafetyLevel:
+        """Convert a 0–1 safety score into a SafetyLevel band"""
+        c = self.config
+        s = max(0.0, min(1.0, safety_score))
+
+        if s <= c.catastrophic_max:
+            return SafetyLevel.CATASTROPHIC
+        if s <= c.critical_max:
+            return SafetyLevel.CRITICAL
+        if s <= c.moderate_max:
+            return SafetyLevel.MODERATE
+        if s <= c.low_max:
+            return SafetyLevel.LOW
+        return SafetyLevel.MINIMAL
+
+    def _evaluate_level(self, level: SafetyLevel, reasons: List[str]) -> SafetyVerdict:
+        """Map SafetyLevel → baseline SafetyVerdict"""
+        if level is SafetyLevel.CATASTROPHIC:
+            reasons.append("Safety level CATASTROPHIC → BLOCK immediately")
+            return SafetyVerdict.BLOCK
+        if level is SafetyLevel.CRITICAL:
+            reasons.append("Safety level CRITICAL → ESCALATE")
+            return SafetyVerdict.ESCALATE
+        if level is SafetyLevel.MODERATE:
+            reasons.append("Safety level MODERATE → continue checks (caution)")
+            return SafetyVerdict.OK
+        if level is SafetyLevel.LOW:
+            reasons.append("Safety level LOW → generally safe, continue checks")
+            return SafetyVerdict.OK
+        if level is SafetyLevel.MINIMAL:
+            reasons.append("Safety level MINIMAL → safe, continue checks")
+            return SafetyVerdict.OK
+
+        reasons.append("Unknown safety level → ESCALATE")
+        return SafetyVerdict.ESCALATE

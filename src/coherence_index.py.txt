@@ -1,0 +1,336 @@
+"""
+DISCLAIMER
+
+I (John Bollinger / AlbusLux) do NOT promise this code will work 100% or at all.
+This module is a CONCEPTUAL FRAMEWORK for a "Coherence Index" layer in a
+coherence-first AGI architecture.
+
+It is intended for:
+- researchers
+- engineers
+- alignment & safety people
+
+who want a *starting point* for implementing, critiquing, or extending the
+"AGI Dancer Protocol" idea.
+
+Use at your own risk. Treat this as patterns and scaffolding, NOT production code.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Dict, List, Optional, Any
+from collections import deque
+import statistics
+import time
+
+
+# -----------------------------------------------------------------------------
+# Enhanced enums & core dataclasses
+# -----------------------------------------------------------------------------
+
+class CoherenceBand(Enum):
+    GREEN = auto()
+    YELLOW = auto()
+    RED = auto()
+
+class DecisionTier(Enum):
+    REFLEX = auto()
+    FAST_HEURISTIC = auto()
+    DELIBERATE = auto()
+    STRATEGIC = auto()
+
+class SystemMode(Enum):
+    NORMAL = auto()
+    CAUTION = auto()
+    EMERGENCY = auto()
+    OVERRIDE = auto()
+
+@dataclass
+class CoherenceIndex:
+    overall: float
+    band: CoherenceBand
+    tier: DecisionTier
+    mode: SystemMode
+    confidence: float
+    channels: Dict[str, float] = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "overall": self.overall,
+            "band": self.band.name,
+            "tier": self.tier.name,
+            "mode": self.mode.name,
+            "confidence": self.confidence,
+            "channels": dict(self.channels),
+            "timestamp": self.timestamp,
+        }
+
+@dataclass
+class CoherenceIndexConfig:
+    channel_weights: Dict[str, float] = field(default_factory=lambda: {
+        "safety": 3.0,
+        "social": 2.0,
+        "task": 1.0,
+        "resources": 1.0,
+        "long_term": 2.0,
+        "stability": 2.0,
+    })
+
+    # Context-specific weight adjustments
+    context_weights: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        "emergency": {"safety": 4.0, "task": 2.0, "resources": 0.5},
+        "social_gathering": {"social": 3.0, "safety": 2.0},
+        "high_efficiency": {"task": 3.0, "resources": 2.0},
+    })
+
+    green_floor: float = 8.0
+    red_floor: float = 3.0
+    smoothing_alpha: float = 0.7
+    history_length: int = 512
+    
+    # Emergency mode thresholds
+    emergency_safety_threshold: float = 0.3
+    emergency_stability_threshold: float = 0.2
+
+
+# -----------------------------------------------------------------------------
+# Enhanced Coherence Index Calculator
+# -----------------------------------------------------------------------------
+
+class CoherenceIndexCalculator:
+    """
+    Enhanced with context-awareness, confidence scoring, and mode detection.
+    """
+
+    def __init__(self, config: Optional[CoherenceIndexConfig] = None) -> None:
+        self.config = config or CoherenceIndexConfig()
+        self._last_overall: Optional[float] = None
+        self._history: deque[float] = deque(maxlen=self.config.history_length)
+        self._ci_history: deque[CoherenceIndex] = deque(maxlen=self.config.history_length)
+
+    def update(
+        self,
+        channels: Dict[str, float],
+        decision_latency_ms: float,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> CoherenceIndex:
+        """Enhanced update with context-awareness and confidence scoring."""
+        
+        # Detect system mode
+        mode = self._detect_system_mode(channels)
+        
+        # Get context-appropriate weights
+        effective_weights = self._get_context_weights(context, mode)
+        
+        # Normalize channels
+        normalized = self._normalize_channels(channels)
+        
+        # Calculate overall CI with context weights
+        overall_raw = self._aggregate_channels(normalized, effective_weights)
+        overall_smoothed = self._apply_smoothing(overall_raw)
+        
+        # Calculate confidence
+        confidence = self._calculate_confidence(normalized, mode)
+        
+        # Determine band and tier
+        band = self._band_from_overall(overall_smoothed)
+        tier = self._tier_from_latency(decision_latency_ms)
+
+        ci = CoherenceIndex(
+            overall=overall_smoothed,
+            band=band,
+            tier=tier,
+            mode=mode,
+            confidence=confidence,
+            channels=normalized,
+        )
+
+        self._history.append(overall_smoothed)
+        self._ci_history.append(ci)
+
+        return ci
+
+    def _get_context_weights(
+        self, 
+        context: Optional[Dict[str, Any]], 
+        mode: SystemMode
+    ) -> Dict[str, float]:
+        """Get weights adjusted for context and system mode."""
+        base_weights = self.config.channel_weights.copy()
+        
+        # Apply mode-based adjustments
+        if mode == SystemMode.EMERGENCY:
+            context_type = "emergency"
+        elif context and "social" in context.get("environment", ""):
+            context_type = "social_gathering"
+        elif context and "efficiency" in context.get("priority", ""):
+            context_type = "high_efficiency"
+        else:
+            return base_weights
+        
+        # Apply context-specific weight adjustments
+        context_weights = self.config.context_weights.get(context_type, {})
+        adjusted_weights = base_weights.copy()
+        for channel, weight in context_weights.items():
+            if channel in adjusted_weights:
+                adjusted_weights[channel] = weight
+                
+        return adjusted_weights
+
+    def _detect_system_mode(self, channels: Dict[str, float]) -> SystemMode:
+        """Detect current system operating mode."""
+        safety = channels.get('safety', 1.0)
+        stability = channels.get('stability', 1.0)
+        
+        if safety < self.config.emergency_safety_threshold:
+            return SystemMode.EMERGENCY
+        elif stability < self.config.emergency_stability_threshold:
+            return SystemMode.CAUTION
+        else:
+            return SystemMode.NORMAL
+
+    def _calculate_confidence(
+        self, 
+        channels: Dict[str, float], 
+        mode: SystemMode
+    ) -> float:
+        """Calculate confidence in this CI measurement."""
+        # Channel completeness
+        filled_channels = sum(1 for v in channels.values() if v > 0)
+        total_channels = len(self.config.channel_weights)
+        completeness = filled_channels / total_channels if total_channels > 0 else 0.0
+        
+        # Channel consistency (if multiple channels available)
+        if len(channels) > 1:
+            values = list(channels.values())
+            variance = statistics.variance(values) if len(values) > 1 else 0.0
+            consistency = 1.0 / (1.0 + variance * 10)  # Scale variance appropriately
+        else:
+            consistency = 0.5  # Low confidence with single channel
+            
+        # Mode-based confidence adjustment
+        mode_confidence = {
+            SystemMode.NORMAL: 1.0,
+            SystemMode.CAUTION: 0.8,
+            SystemMode.EMERGENCY: 0.6,
+            SystemMode.OVERRIDE: 0.4
+        }.get(mode, 0.5)
+        
+        confidence = (completeness * 0.4 + consistency * 0.4 + mode_confidence * 0.2)
+        return max(0.1, min(1.0, confidence))  # Clamp to reasonable range
+
+    def _aggregate_channels(
+        self, 
+        channels: Dict[str, float], 
+        weights: Dict[str, float]
+    ) -> float:
+        """Weighted average with custom weights."""
+        total_weight = sum(weights.values()) or 1.0
+        score_0_1 = 0.0
+        for name, weight in weights.items():
+            score_0_1 += weight * channels.get(name, 0.0)
+        score_0_1 /= total_weight
+        return score_0_1 * 10.0
+
+    def get_system_health_report(self) -> Dict[str, Any]:
+        """Comprehensive system health report."""
+        if not self._ci_history:
+            return {"status": "no_data", "message": "No CI history available"}
+        
+        recent_cis = list(self._ci_history)[-10:]  # Last 10 measurements
+        current_ci = recent_cis[-1]
+        
+        # Basic stats
+        avg_ci = statistics.mean(ci.overall for ci in recent_cis)
+        avg_confidence = statistics.mean(ci.confidence for ci in recent_cis)
+        
+        # Mode distribution
+        mode_counts = {}
+        for ci in recent_cis:
+            mode_counts[ci.mode.name] = mode_counts.get(ci.mode.name, 0) + 1
+        
+        # Channel health
+        channel_health = {}
+        for channel in self.config.channel_weights:
+            values = [ci.channels.get(channel, 0.0) for ci in recent_cis]
+            channel_health[channel] = {
+                "current": current_ci.channels.get(channel, 0.0),
+                "average": statistics.mean(values) if values else 0.0,
+                "trend": self._channel_trend(values),
+            }
+        
+        return {
+            "status": "healthy" if current_ci.band == CoherenceBand.GREEN else "needs_attention",
+            "current_ci": current_ci.overall,
+            "current_band": current_ci.band.name,
+            "current_mode": current_ci.mode.name,
+            "average_ci": avg_ci,
+            "average_confidence": avg_confidence,
+            "trend": self.trend(),
+            "mode_distribution": mode_counts,
+            "channel_health": channel_health,
+        }
+
+    def _channel_trend(self, values: List[float]) -> str:
+        """Calculate trend for a single channel."""
+        if len(values) < 2:
+            return "stable"
+        
+        slope = values[-1] - values[0]
+        if slope > 0.1:
+            return "improving"
+        elif slope < -0.1:
+            return "degrading"
+        else:
+            return "stable"
+
+    # Keep the original helper methods (they're excellent)
+    def _normalize_channels(self, channels: Dict[str, float]) -> Dict[str, float]:
+        normalized: Dict[str, float] = {}
+        for name in self.config.channel_weights.keys():
+            v = float(channels.get(name, 0.0))
+            normalized[name] = max(0.0, min(1.0, v))
+        return normalized
+
+    def _apply_smoothing(self, raw: float) -> float:
+        a = self.config.smoothing_alpha
+        if self._last_overall is None:
+            smoothed = raw
+        else:
+            smoothed = a * self._last_overall + (1.0 - a) * raw
+        self._last_overall = smoothed
+        return smoothed
+
+    def _band_from_overall(self, overall: float) -> CoherenceBand:
+        if overall >= self.config.green_floor:
+            return CoherenceBand.GREEN
+        if overall < self.config.red_floor:
+            return CoherenceBand.RED
+        return CoherenceBand.YELLOW
+
+    @staticmethod
+    def _tier_from_latency(ms: float) -> DecisionTier:
+        if ms <= 50.0:
+            return DecisionTier.REFLEX
+        if ms <= 150.0:
+            return DecisionTier.FAST_HEURISTIC
+        if ms <= 500.0:
+            return DecisionTier.DELIBERATE
+        return DecisionTier.STRATEGIC
+
+    def history(self) -> List[float]:
+        return list(self._history)
+
+    def trend(self) -> Optional[float]:
+        if len(self._history) < 4:
+            return None
+        y = list(self._history)
+        x = list(range(len(y)))
+        mean_x = statistics.mean(x)
+        mean_y = statistics.mean(y)
+        num = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y))
+        den = sum((xi - mean_x) ** 2 for xi in x) or 1e-8
+        return num / den

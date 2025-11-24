@@ -1,0 +1,325 @@
+"""
+DISCLAIMER
+I (John Bollinger / AlbusLux) do NOT promise this code will work 100% or at all.
+This module is a CONCEPTUAL FRAMEWORK for the architecture and how the system
+*might* look and function in a coherence-first AGI design.
+It is intended for:
+- researchers
+- engineers
+- and alignment folks
+who want a starting point for implementing, critiquing, or extending the
+"AGI Dancer Protocol" idea.
+Use at your own risk. Treat as patterns, not production code.
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Callable, Tuple
+import logging
+import math
+import statistics
+
+# Import shared types from dancer module
+from dancer import Action, State, Context  # assumes dancer.py is in the same package
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Partner assessment structures
+# ---------------------------------------------------------------------------
+@dataclass
+class PartnerTrajectoryStep:
+    """One step in a simulated rollout."""
+    step: int
+    coherence: float
+    state: State
+    action_taken: str  # Track which action was taken at this step
+
+
+@dataclass
+class PartnerTrajectory:
+    """A single simulated future trajectory for an action."""
+    steps: List[PartnerTrajectoryStep] = field(default_factory=list)
+
+    @property
+    def min_coherence(self) -> float:
+        if not self.steps:
+            return 0.0
+        return min(s.coherence for s in self.steps)
+
+    @property
+    def max_coherence(self) -> float:
+        if not self.steps:
+            return 0.0
+        return max(s.coherence for s in self.steps)
+
+    @property
+    def final_coherence(self) -> float:
+        if not self.steps:
+            return 0.0
+        return self.steps[-1].coherence
+
+    @property
+    def recovery_potential(self) -> float:
+        """Measure how well coherence recovers from lows"""
+        if len(self.steps) < 2:
+            return 1.0
+        min_coh = self.min_coherence
+        final_coh = self.final_coherence
+        if min_coh <= 0:
+            return 0.0
+        return final_coh / min_coh
+
+    @property
+    def monotonic_decline(self) -> bool:
+        """Check if coherence only decreases (bad sign)"""
+        if len(self.steps) < 2:
+            return False
+        for i in range(1, len(self.steps)):
+            if self.steps[i].coherence > self.steps[i - 1].coherence:
+                return False
+        return True
+
+
+@dataclass
+class PartnerAssessment:
+    """
+    Result of Partner's skeptical evaluation of a candidate action.
+    """
+    action: Action
+    mean_coherence: float
+    worst_coherence: float
+    best_coherence: float
+    coherence_std: float
+    estimated_cascade_risk: float
+    estimated_uncertainty: float
+    avg_recovery_potential: float
+    monotonic_ratio: float  # Percentage of trajectories with monotonic decline
+    should_escalate: bool
+    reasons: List[str] = field(default_factory=list)
+    trajectories: List[PartnerTrajectory] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Partner: World Model + Skeptical Counterfactuals
+# ---------------------------------------------------------------------------
+class Partner:
+    """
+    Partner v1.0 — Skeptical Counterfactual Evaluator
+    ROLE:
+        The Partner is the "skeptic" in the AGI Dancer Protocol stack.
+        Where the Dancer is trying to move gracefully through the world,
+        the Partner is the one asking:
+        - "What if you're wrong?"
+        - "What if this goes sideways?"
+        - "What does the *worst* trajectory look like?"
+    """
+    def __init__(
+        self,
+        world_model: Callable[[State, Action, Context], State],
+        coherence_fn: Optional[Callable[[State, Context], float]] = None,
+        num_rollouts: int = 16,
+        horizon: int = 8,
+        safety_floor: float = -10.0,
+        cascade_threshold: float = 20.0,
+        uncertainty_threshold: float = 10.0,
+        recovery_threshold: float = 0.5,   # Minimum recovery potential
+        monotonic_threshold: float = 0.3,  # Max ratio of monotonic declines
+    ) -> None:
+        self.world_model = world_model
+        self.coherence_fn = coherence_fn or self.default_coherence_fn
+        self.num_rollouts = max(1, int(num_rollouts))
+        self.horizon = max(1, int(horizon))
+        self.safety_floor = float(safety_floor)
+        self.cascade_threshold = float(cascade_threshold)
+        self.uncertainty_threshold = float(uncertainty_threshold)
+        self.recovery_threshold = float(recovery_threshold)
+        self.monotonic_threshold = float(monotonic_threshold)
+
+    def validate_action(self, action: Action) -> bool:
+        """Basic sanity checks before expensive rollouts"""
+        if not action.name or not action.name.strip():
+            return False
+        if action.metadata.get('veto', False):
+            return False
+        if action.metadata.get('safety_violation', False):
+            return False
+        return True
+
+    def evaluate_action(
+        self,
+        state: State,
+        context: Context,
+        action: Action,
+    ) -> PartnerAssessment:
+        """Run multiple counterfactual rollouts for a proposed action and compute a skeptical assessment."""
+        if not self.validate_action(action):
+            return self._create_invalid_assessment(action, "Action failed validation")
+
+        trajectories: List[PartnerTrajectory] = []
+        for rollout_idx in range(self.num_rollouts):
+            traj = self._simulate_trajectory(
+                initial_state=state,
+                context=context,
+                action=action,
+                rollout_index=rollout_idx,
+            )
+            trajectories.append(traj)
+
+        return self._compute_assessment(action, trajectories)
+
+    def _simulate_trajectory(
+        self,
+        initial_state: State,
+        context: Context,
+        action: Action,
+        rollout_index: int = 0,
+    ) -> PartnerTrajectory:
+        """Simulate one possible future trajectory"""
+        traj = PartnerTrajectory()
+        current_state = dict(initial_state)
+        current_action = action
+
+        for step in range(1, self.horizon + 1):
+            try:
+                current_action = self._choose_rollout_action(
+                    current_state, context, action, step
+                )
+                current_state = self.world_model(current_state, current_action, context)
+            except Exception as e:
+                logger.exception(
+                    "world_model error on rollout %d step %d for '%s': %s",
+                    rollout_index,
+                    step,
+                    action.name,
+                    e,
+                )
+                break
+
+            coherence = self.coherence_fn(current_state, context)
+            traj.steps.append(
+                PartnerTrajectoryStep(
+                    step=step,
+                    coherence=coherence,
+                    state=dict(current_state),
+                    action_taken=current_action.name,
+                )
+            )
+        return traj
+
+    def _choose_rollout_action(
+        self,
+        state: State,
+        context: Context,
+        original_action: Action,
+        step: int,
+    ) -> Action:
+        """Choose action for rollout steps — can implement varied strategies"""
+        current_coherence = self.coherence_fn(state, context)
+        if step > self.horizon // 2 and current_coherence < 0:
+            return self._get_recovery_action(state, context)
+        return original_action
+
+    def _get_recovery_action(self, state: State, context: Context) -> Action:
+        """Generate a recovery action when coherence is low"""
+        return Action(
+            name="recovery_stabilize",
+            metadata={"tags": ["recovery", "stabilization"]}
+        )
+
+    def _compute_assessment(
+        self,
+        action: Action,
+        trajectories: List[PartnerTrajectory],
+    ) -> PartnerAssessment:
+        """Compute comprehensive assessment from trajectories"""
+        if not trajectories:
+            return self._create_invalid_assessment(action, "No trajectories generated")
+
+        final_scores = [t.final_coherence for t in trajectories]
+        all_steps_min = [t.min_coherence for t in trajectories]
+        all_steps_max = [t.max_coherence for t in trajectories]
+        recovery_potentials = [t.recovery_potential for t in trajectories]
+        monotonic_flags = [t.monotonic_decline for t in trajectories]
+
+        mean_coh = statistics.mean(final_scores) if final_scores else 0.0
+        std_coh = statistics.pstdev(final_scores) if len(final_scores) > 1 else 0.0
+        worst_coh = min(all_steps_min) if all_steps_min else 0.0
+        best_coh = max(all_steps_max) if all_steps_max else 0.0
+        avg_recovery = statistics.mean(recovery_potentials) if recovery_potentials else 0.0
+        monotonic_ratio = sum(monotonic_flags) / len(monotonic_flags) if monotonic_flags else 0.0
+        cascade_risk = max((t.max_coherence - t.min_coherence for t in trajectories), default=0.0)
+        estimated_uncertainty = abs(std_coh)
+
+        should_escalate, reasons = self._decide_escalation(
+            worst_coherence=worst_coh,
+            cascade_risk=cascade_risk,
+            uncertainty=estimated_uncertainty,
+            recovery_potential=avg_recovery,
+            monotonic_ratio=monotonic_ratio,
+        )
+
+        return PartnerAssessment(
+            action=action,
+            mean_coherence=mean_coh,
+            worst_coherence=worst_coh,
+            best_coherence=best_coh,
+            coherence_std=std_coh,
+            estimated_cascade_risk=cascade_risk,
+            estimated_uncertainty=estimated_uncertainty,
+            avg_recovery_potential=avg_recovery,
+            monotonic_ratio=monotonic_ratio,
+            should_escalate=should_escalate,
+            reasons=reasons,
+            trajectories=trajectories,
+        )
+
+    def _create_invalid_assessment(self, action: Action, reason: str) -> PartnerAssessment:
+        return PartnerAssessment(
+            action=action,
+            mean_coherence=-100.0,
+            worst_coherence=-100.0,
+            best_coherence=-100.0,
+            coherence_std=0.0,
+            estimated_cascade_risk=100.0,
+            estimated_uncertainty=100.0,
+            avg_recovery_potential=0.0,
+            monotonic_ratio=1.0,
+            should_escalate=True,
+            reasons=[reason],
+            trajectories=[],
+        )
+
+    def _decide_escalation(
+        self,
+        worst_coherence: float,
+        cascade_risk: float,
+        uncertainty: float,
+        recovery_potential: float,
+        monotonic_ratio: float,
+    ) -> Tuple[bool, List[str]]:
+        """Decide whether this action should be escalated — polished & final"""
+        reasons: List[str] = []
+        escalate = False
+
+        if worst_coherence < self.safety_floor:
+            escalate = True
+            reasons.append(f"worst_coherence {worst_coherence:.3f} < safety_floor {self.safety_floor:.3f}")
+
+        if cascade_risk > self.cascade_threshold:
+            escalate = True
+            reasons.append(f"cascade_risk {cascade_risk:.3f} > cascade_threshold {self.cascade_threshold:.3f}")
+
+        if uncertainty > self.uncertainty_threshold:
+            escalate = True
+            reasons.append(f"uncertainty {uncertainty:.3f} > uncertainty_threshold {self.uncertainty_threshold:.3f}")
+
+        if recovery_potential < self.recovery_threshold:
+            escalate = True
+            reasons.append(f"recovery_potential {recovery_potential:.3f} < recovery_threshold {self.recovery_threshold:.3f}")
+
+        if monotonic_ratio > self.monotonic_threshold:
+            escalate = True
+            reasons.append(f"monotonic_ratio {monotonic_ratio:.3f} > monotonic_threshold {self.monotonic_threshold:.3f}")
+
+        return escalate or bool(reasons), reasons

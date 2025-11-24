@@ -1,0 +1,983 @@
+"""
+DISCLAIMER
+
+I (John Bollinger / AlbusLux) do NOT promise this code will work 100% or at all.
+This module is a CONCEPTUAL FRAMEWORK for the architecture and how the system
+*might* look and function in a coherence-first AGI design.
+
+It is intended for:
+- researchers
+- engineers
+- and alignment folks
+
+who want a starting point for implementing, critiquing, or extending the
+"AGI Dancer Protocol" idea.
+
+Use at your own risk. Treat as patterns, not production code.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Callable, Tuple, Union
+import logging
+import math
+import time
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Basic type aliases and enums
+# ---------------------------------------------------------------------------
+
+State = Dict[str, Any]    # e.g. {"safety": 0.9, "stability": 0.8, ...}
+Context = Dict[str, Any]  # e.g. {"location": "kitchen", "time": "07:15", ...}
+
+class Priority(Enum):
+    SAFETY_CRITICAL = 10
+    HUMAN_WELLBEING = 8
+    SOCIAL_HARMONY = 6
+    TASK_EFFICIENCY = 4
+    RESOURCE_OPTIMIZATION = 2
+
+class Decision(Enum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+    VETO = "VETO"
+    DEFER = "DEFER"
+    FLAG = "FLAG"
+
+# ---------------------------------------------------------------------------
+# Action representation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Action:
+    """
+    Represents a candidate action for the Dancer to take.
+
+    name:
+        Human-readable name, e.g. "step_forward", "announce_warning", etc.
+
+    params:
+        Arbitrary parameters relevant to the action. Could be joint angles
+        for a robot, UI changes for a software agent, etc.
+
+    metadata:
+        Extra info used by higher-level systems (Partner / Conductor / CI),
+        such as:
+        - "estimated_cost"
+        - "estimated_disruption"
+        - "estimated_risk"
+        - "tags": ["movement", "verbal", "hazard_interaction"]
+    """
+    name: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> bool:
+        """Basic sanity checks for action validity"""
+        if not self.name or not self.name.strip():
+            return False
+        if self.metadata.get('safety_violation', False):
+            return False
+        if self.metadata.get('veto', False):
+            return False
+        return True
+
+
+@dataclass
+class ActionEvaluation:
+    """
+    Container for how the Dancer evaluated a given action.
+
+    total_score:
+        Aggregate coherence score for this action.
+
+    immediate_score:
+        Coherence of the next state only (no lookahead).
+
+    rollout_score:
+        Coherence across simulated future steps, if a world model is available.
+
+    confidence:
+        Confidence in this evaluation (0.0 to 1.0)
+
+    uncertainty:
+        Uncertainty estimate if using probabilistic models
+
+    details:
+        Optional structured breakdown (for logging, debugging, or feeding to
+        a Partner / Conductor).
+    """
+    action: Action
+    total_score: float
+    immediate_score: float
+    rollout_score: float
+    confidence: float = 1.0
+    uncertainty: float = 0.0
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CoherenceBreakdown:
+    """Detailed breakdown of coherence scoring"""
+    safety: float = 0.0
+    social: float = 0.0
+    task: float = 0.0
+    resource_cost: float = 0.0
+    disruption: float = 0.0
+    net_outcome: float = 0.0
+    total: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Dancer: Local Coherence-Oriented Decision Maker
+# ---------------------------------------------------------------------------
+
+class Dancer:
+    """
+    Dancer v1.0 — Local Coherence Agent
+
+    ROLE:
+        The Dancer is the "executor" in the AGI Dancer Protocol stack.
+        It does NOT try to solve alignment by itself. Its job is:
+
+        - look at the current state + context
+        - evaluate a set of candidate actions
+        - estimate which ones are MOST COHERENT locally
+        - pick the best option (or hand its evaluations to a Conductor)
+
+    COHERENCE (informal here):
+        A measure of how stable, safe, and non-chaotic the system becomes
+        after an action. In this conceptual version, coherence is treated as:
+
+        coherence(state) = weighted_sum(
+            + safety
+            + stability
+            - disruption
+            - resource_cost
+            - cascade_risk
+        )
+
+        The exact definition is domain-specific and should be supplied by
+        the integrator via `coherence_fn`.
+
+    INTERACTIONS:
+        - Partner: may provide world model rollouts / counterfactuals.
+        - Conductor: may override or veto choices, or request more info.
+        - CI / Safety Manual: enforce hard floors / escalation rules.
+
+    This class is intentionally simple and overridable.
+    """
+
+    def __init__(
+        self,
+        coherence_fn: Optional[Callable[[State, Context], float]] = None,
+        world_model: Optional[
+            Callable[[State, Action, Context], State]
+        ] = None,
+        rollout_horizon: int = 3,
+        rollout_discount: float = 0.95,
+        partner_weights: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """
+        coherence_fn:
+            Function that takes (state, context) and returns a float coherence score.
+            Higher = more coherent. If None, uses `default_coherence_fn`.
+
+        world_model:
+            Optional function that predicts the next state given
+                (state, action, context) -> next_state
+            If None, only immediate coherence is used.
+
+        rollout_horizon:
+            How many steps ahead to simulate using the world model when scoring.
+
+        rollout_discount:
+            Discount factor in [0, 1] for future coherence scores during rollout.
+            1.0 = value future equally, 0.95 = slight preference for near-term.
+
+        partner_weights:
+            Optional weights provided by Partner for protocol adjustment
+        """
+        self.coherence_fn = coherence_fn or self.default_coherence_fn
+        self.world_model = world_model
+        self.rollout_horizon = max(0, int(rollout_horizon))
+        self.rollout_discount = float(rollout_discount)
+        self.partner_weights = partner_weights or {}
+        self.decision_history: List[Dict[str, Any]] = []
+
+    # ----------------------------------------------------------------------
+    # Core public API
+    # ----------------------------------------------------------------------
+
+    def choose_action(
+        self,
+        state: State,
+        context: Context,
+        actions: List[Action],
+    ) -> Tuple[Optional[Action], List[ActionEvaluation]]:
+        """
+        Evaluate all candidate actions and return the most coherent one.
+
+        Returns:
+            (best_action, evaluations)
+
+            best_action:
+                The Action instance with the highest total_score,
+                or None if no actions are given.
+
+            evaluations:
+                List of ActionEvaluation for logging / analysis.
+
+        NOTE:
+            - This method does NOT enforce any hard safety floors.
+              That is expected to be handled by the CI / Safety Manual /
+              Conductor layer, which can filter or veto the result.
+        """
+        if not actions:
+            logger.warning("Dancer.choose_action called with no actions.")
+            return None, []
+
+        # Filter out invalid actions
+        valid_actions = [action for action in actions if action.validate()]
+        if not valid_actions:
+            logger.warning("No valid actions after validation.")
+            return None, []
+
+        evaluations: List[ActionEvaluation] = []
+        for action in valid_actions:
+            eval_result = self.evaluate_action(state, context, action)
+            evaluations.append(eval_result)
+
+        # Pick highest total_score
+        best_eval = max(evaluations, key=lambda ev: ev.total_score)
+        best_action = best_eval.action
+
+        # Log decision
+        decision_record = {
+            "timestamp": time.time(),
+            "action": best_action.name,
+            "total_score": best_eval.total_score,
+            "confidence": best_eval.confidence,
+            "context": context.copy(),
+            "alternatives": len(evaluations)
+        }
+        self.decision_history.append(decision_record)
+
+        logger.debug(
+            "DANCER decision: selected '%s' with score=%.3f (confidence=%.2f)",
+            best_action.name,
+            best_eval.total_score,
+            best_eval.confidence,
+        )
+
+        return best_action, evaluations
+
+    def evaluate_action(
+        self,
+        state: State,
+        context: Context,
+        action: Action,
+    ) -> ActionEvaluation:
+        """
+        Evaluate a single action:
+            - compute immediate coherence of the next state (if available)
+            - optionally simulate several future steps with a world model
+            - combine into a total coherence score
+
+        This is where "Dancer" does most of its thinking.
+
+        The world_model is intentionally simple in this conceptual version:
+            next_state = world_model(state, action, context)
+
+        Real systems may do:
+            - distributional next states
+            - uncertainty estimates
+            - multiple counterfactual rollouts per action
+        """
+        # Immediate next state estimate (if world model provided)
+        if self.world_model is not None:
+            try:
+                next_state = self.world_model(state, action, context)
+            except Exception as e:
+                logger.exception(
+                    "world_model failed for action '%s': %s",
+                    action.name,
+                    e,
+                )
+                # If world model fails, treat immediate as current state.
+                next_state = state
+        else:
+            # No world model → assume immediate state is unchanged
+            # (or caller can approximate via action.metadata)
+            next_state = self.estimate_next_state_from_metadata(state, action)
+
+        immediate_score = self.coherence_fn(next_state, context)
+
+        rollout_score = 0.0
+        rollout_details: List[Dict[str, Any]] = []
+        confidence = 1.0
+        uncertainty = 0.0
+
+        if self.world_model is not None and self.rollout_horizon > 0:
+            rollout_score, rollout_details, confidence = self._rollout_score(
+                next_state, context, action
+            )
+
+        total_score = immediate_score + rollout_score
+
+        details: Dict[str, Any] = {
+            "immediate_state": next_state,
+            "immediate_score": immediate_score,
+            "rollout_score": rollout_score,
+            "rollout_steps": rollout_details,
+            "partner_weights": self.partner_weights.copy(),
+        }
+
+        return ActionEvaluation(
+            action=action,
+            total_score=total_score,
+            immediate_score=immediate_score,
+            rollout_score=rollout_score,
+            confidence=confidence,
+            uncertainty=uncertainty,
+            details=details,
+        )
+
+    # ----------------------------------------------------------------------
+    # Default coherence function & helpers
+    # ----------------------------------------------------------------------
+
+    def default_coherence_fn(self, state: State, context: Context) -> float:
+        """
+        Very simple, domain-agnostic default coherence function.
+
+        Looks for numeric keys in `state`:
+            - "safety"           (0..1, higher = better)
+            - "stability"        (0..1, higher = better)
+            - "disruption"       (0..1, higher = worse)
+            - "resource_cost"    (0..1, higher = worse)
+            - "cascade_risk"     (0..1, higher = worse)
+
+        Coherence ~
+            + 3 * safety
+            + 2 * stability
+            - 2 * disruption
+            - 1 * resource_cost
+            - 3 * cascade_risk
+
+        This is JUST a placeholder. Real deployments should supply
+        a domain-specific function instead.
+        """
+        safety = float(state.get("safety", 0.0))
+        stability = float(state.get("stability", 0.0))
+        disruption = float(state.get("disruption", 0.0))
+        resource_cost = float(state.get("resource_cost", 0.0))
+        cascade_risk = float(state.get("cascade_risk", 0.0))
+
+        score = (
+            3.0 * safety
+            + 2.0 * stability
+            - 2.0 * disruption
+            - 1.0 * resource_cost
+            - 3.0 * cascade_risk
+        )
+
+        return score
+
+    def estimate_next_state_from_metadata(
+        self,
+        state: State,
+        action: Action,
+    ) -> State:
+        """
+        Fallback mechanism when no explicit world_model is provided.
+
+        Uses action.metadata fields like:
+            - "delta_safety"
+            - "delta_stability"
+            - "delta_disruption"
+            - ...
+
+        to apply a naive update to the scalar fields in the state.
+
+        This is purely illustrative. Real systems should pass in either
+        a proper world model or an environment that can produce next states.
+        """
+        next_state = dict(state)  # shallow copy
+
+        deltas = action.metadata.get("delta_state", {})
+        for key, delta in deltas.items():
+            try:
+                next_state[key] = float(next_state.get(key, 0.0)) + float(delta)
+            except (TypeError, ValueError):
+                # If not numeric, just overwrite
+                next_state[key] = delta
+
+        return next_state
+
+    def _rollout_score(
+        self,
+        start_state: State,
+        context: Context,
+        start_action: Action,
+    ) -> Tuple[float, List[Dict[str, Any]], float]:
+        """
+        Internal helper to simulate several steps ahead and accumulate
+        discounted coherence.
+
+        Enhanced version:
+            - Chooses different actions at each step using a simple policy
+            - Calculates confidence based on rollout stability
+        """
+        if self.world_model is None or self.rollout_horizon <= 0:
+            return 0.0, [], 1.0
+
+        total = 0.0
+        steps: List[Dict[str, Any]] = []
+        current_state = start_state
+        scores = []
+
+        for t in range(1, self.rollout_horizon + 1):
+            try:
+                # Choose action for this rollout step
+                rollout_action = self._choose_rollout_action(current_state, context, start_action)
+                current_state = self.world_model(current_state, rollout_action, context)
+            except Exception as e:
+                logger.exception(
+                    "world_model failed during rollout step %d: %s",
+                    t,
+                    e,
+                )
+                break
+
+            weight = self.rollout_discount ** t
+            score_t = self.coherence_fn(current_state, context)
+            total += weight * score_t
+            scores.append(score_t)
+
+            steps.append(
+                {
+                    "step": t,
+                    "weight": weight,
+                    "state": current_state,
+                    "score": score_t,
+                    "action": rollout_action.name,
+                }
+            )
+
+        # Calculate confidence based on score stability
+        confidence = self._calculate_rollout_confidence(scores)
+
+        return total, steps, confidence
+
+    def _choose_rollout_action(
+        self,
+        state: State,
+        context: Context,
+        original_action: Action,
+    ) -> Action:
+        """
+        Choose action for rollout steps. In real systems, this would use
+        a simpler policy or continue with similar actions.
+        """
+        # Simple strategy: continue with similar type of action
+        # Real implementations would use a proper rollout policy
+        return Action(
+            name=f"rollout_continuation_of_{original_action.name}",
+            params=original_action.params,
+            metadata=original_action.metadata
+        )
+
+    def _calculate_rollout_confidence(self, scores: List[float]) -> float:
+        """Calculate confidence based on rollout score stability"""
+        if len(scores) <= 1:
+            return 1.0
+        
+        # Higher confidence if scores are stable or improving
+        avg_score = sum(scores) / len(scores)
+        variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
+        
+        # Convert to confidence (0.0 to 1.0)
+        # Lower variance = higher confidence
+        confidence = 1.0 / (1.0 + math.sqrt(variance))
+        return min(1.0, max(0.1, confidence))  # Clamp to reasonable range
+
+
+# ---------------------------------------------------------------------------
+# Partner: Human-Field Interface for Behavior Tuning
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HumanFeedback:
+    """Simple feedback object after an interaction/episode"""
+    comfort: float        # -10 (terrible) to +10 (felt great)
+    trust: float          # -10 to +10
+    disruption: float     # 0 (fine) to 10 (way too disruptive)
+    comment: str = ""     # optional free-text
+
+class Partner:
+    """
+    Partner = human–field interface.
+    Tunes the Dancer's behavior over time based on feedback + outcomes.
+    """
+
+    def __init__(self, dancer: Dancer):
+        self.dancer = dancer
+        # Extra weights on top of priority weights, per protocol name
+        self.protocol_weights: Dict[str, float] = {}
+        self.history: List[Dict[str, Any]] = []
+        self.feedback_history: List[HumanFeedback] = []
+
+    def register_protocol(self, protocol_name: str, initial_weight: float = 1.0):
+        """Register a protocol for weight adjustment"""
+        self.protocol_weights[protocol_name] = initial_weight
+
+    def apply_weights(self):
+        """Inject Partner weights into the Dancer before decisions"""
+        self.dancer.partner_weights = self.protocol_weights.copy()
+
+    def record_episode(self, feedback: HumanFeedback, outcome: Dict[str, Any]):
+        """Record human feedback and outcomes for learning"""
+        self.feedback_history.append(feedback)
+        self.history.append({
+            "feedback": feedback,
+            "outcome": outcome,
+            "timestamp": time.time(),
+            "current_weights": self.protocol_weights.copy()
+        })
+        self._adjust_weights(feedback)
+
+    def _adjust_weights(self, feedback: HumanFeedback):
+        """
+        Simple rule-based weight adjustment:
+        - If disruption too high, boost social harmony protocols
+        - If trust is high but comfort low, slightly boost efficiency
+        """
+        # Ensure the dancer has this dict
+        if not hasattr(self.dancer, "partner_weights"):
+            self.dancer.partner_weights = self.protocol_weights
+
+        # Too disruptive → more social harmony
+        if feedback.disruption > 5:
+            for protocol_name in self.protocol_weights:
+                if "social" in protocol_name.lower() or "domestic" in protocol_name.lower():
+                    self.protocol_weights[protocol_name] *= 1.2
+                    logger.info(f"Partner: Increased weight for {protocol_name} due to high disruption")
+
+        # Very safe but "too slow" → tiny boost to task efficiency
+        if feedback.comfort < 3 and feedback.trust > 5:
+            for protocol_name in self.protocol_weights:
+                if "task" in protocol_name.lower() or "efficiency" in protocol_name.lower():
+                    self.protocol_weights[protocol_name] *= 1.1
+                    logger.info(f"Partner: Slightly increased weight for {protocol_name} for better efficiency")
+
+        # Low trust → emphasize safety
+        if feedback.trust < 0:
+            for protocol_name in self.protocol_weights:
+                if "safety" in protocol_name.lower():
+                    self.protocol_weights[protocol_name] *= 1.3
+                    logger.info(f"Partner: Boosted safety protocol {protocol_name} due to low trust")
+
+    def get_learning_summary(self) -> Dict[str, Any]:
+        """Get summary of learning progress"""
+        if not self.history:
+            return {"message": "No learning data yet"}
+        
+        recent_feedback = self.feedback_history[-10:]  # Last 10 episodes
+        avg_comfort = sum(f.comfort for f in recent_feedback) / len(recent_feedback)
+        avg_trust = sum(f.trust for f in recent_feedback) / len(recent_feedback)
+        
+        return {
+            "episodes_recorded": len(self.history),
+            "avg_comfort": avg_comfort,
+            "avg_trust": avg_trust,
+            "current_weights": self.protocol_weights.copy(),
+            "trend": "improving" if avg_comfort > 0 and avg_trust > 0 else "needs_attention"
+        }
+
+
+# ---------------------------------------------------------------------------
+# Safety Manual: Constitutional Bedrock
+# ---------------------------------------------------------------------------
+
+class SafetyManual:
+    """
+    Encodes hard safety floors and context tolerance rules.
+    The constitutional law for the Conductor to enforce.
+    """
+
+    def __init__(self):
+        self.global_min_safety = 0.5
+        self.context_tolerance = {
+            "library": 4.0,
+            "subway": 12.0,
+            "emergency": 20.0,
+            "hospital": 6.0,
+            "factory": 8.0,
+        }
+        self.hard_constraints: List[str] = [
+            "NEVER operate below safety minimum",
+            "ALWAYS yield to humans in motion",
+            "NEVER block emergency exits",
+            "ALWAYS maintain communication when assistive"
+        ]
+
+    def classify_safety(self, safety_score: float) -> Priority:
+        """Classify safety level for appropriate priority response"""
+        if safety_score < 0.3:
+            return Priority.SAFETY_CRITICAL
+        elif safety_score < 0.5:
+            return Priority.HUMAN_WELLBEING
+        elif safety_score < 0.7:
+            return Priority.SOCIAL_HARMONY
+        elif safety_score < 0.9:
+            return Priority.TASK_EFFICIENCY
+        else:
+            return Priority.RESOURCE_OPTIMIZATION
+
+    def tolerance_for(self, context_name: str, system_health: float) -> float:
+        """Get disruption tolerance for context, adjusted by system health"""
+        base = self.context_tolerance.get(context_name, 6.0)
+        modifier = 0.5 + 0.5 * system_health  # 0.5–1.0
+        return base * modifier
+
+    def check_hard_constraints(self, action: Action, context: Context) -> List[str]:
+        """Check action against hard safety constraints"""
+        violations = []
+        
+        # Check safety minimum
+        if action.metadata.get('safety_score', 1.0) < self.global_min_safety:
+            violations.append("LOW_SAFETY")
+            
+        # Check context-specific constraints
+        location = context.get('location', '')
+        if location == 'hospital' and action.metadata.get('noise_level', 0) > 4:
+            violations.append("EXCESSIVE_NOISE_IN_HOSPITAL")
+            
+        if action.metadata.get('blocks_exits', False):
+            violations.append("BLOCKS_EMERGENCY_EXITS")
+            
+        return violations
+
+
+# ---------------------------------------------------------------------------
+# Conductor: Meta-Oversight & Arbitration
+# ---------------------------------------------------------------------------
+
+class Conductor:
+    """
+    Orchestrator with system-wide oversight.
+    Sees patterns the Dancer cannot - the whole performance, not just 3 moves ahead.
+    """
+
+    def __init__(self, dancer: Dancer, safety_manual: SafetyManual):
+        self.dancer = dancer
+        self.safety_manual = safety_manual
+        self.system_health = 1.0  # 0.0 to 1.0
+        self.veto_history: List[Dict[str, Any]] = []
+        self.context_history: List[Context] = []
+
+    def evaluate_decision(
+        self,
+        proposed_action: Action,
+        dancer_evaluation: ActionEvaluation,
+        context: Context,
+    ) -> Tuple[Decision, str]:
+        """
+        Meta-level evaluation for ambiguous or high-stakes decisions.
+        Conductor sees patterns Dancer cannot.
+        """
+        # Track context for drift detection
+        self.context_history.append(context.copy())
+        if len(self.context_history) > 100:  # Keep reasonable history
+            self.context_history.pop(0)
+
+        # 1. Check hard safety constraints
+        safety_violations = self.safety_manual.check_hard_constraints(proposed_action, context)
+        if safety_violations:
+            self._record_veto(proposed_action, f"Safety violations: {safety_violations}")
+            return Decision.VETO, f"SAFETY_VIOLATION:{','.join(safety_violations)}"
+
+        # 2. Check disruption tolerance
+        disruption = proposed_action.metadata.get('disruption', 0)
+        tolerance = self.safety_manual.tolerance_for(
+            context.get('location', 'unknown'), 
+            self.system_health
+        )
+        if disruption > tolerance:
+            return Decision.REJECT, f"EXCESSIVE_DISRUPTION:{disruption:.1f}>{tolerance:.1f}"
+
+        # 3. Check system-wide coherence trends
+        if self._detect_coherence_drift():
+            # Tighten tolerance during degradation
+            if proposed_action.metadata.get('creates_precedent', False):
+                self._record_veto(proposed_action, "Creates bad precedent during coherence drift")
+                return Decision.VETO, "COHERENCE_DRIFT_PRECEDENT"
+
+        # 4. Check confidence threshold
+        if dancer_evaluation.confidence < 0.7:
+            return Decision.DEFER, f"LOW_CONFIDENCE:{dancer_evaluation.confidence:.2f}"
+
+        # 5. If we get here, Dancer's assessment was reasonable
+        return Decision.APPROVE, "WITHIN_BOUNDS"
+
+    def _detect_coherence_drift(self) -> bool:
+        """Detect if system coherence is trending downward"""
+        if len(self.dancer.decision_history) < 10:
+            return False
+            
+        recent_scores = [d['total_score'] for d in self.dancer.decision_history[-10:]]
+        older_scores = [d['total_score'] for d in self.dancer.decision_history[-20:-10]]
+        
+        if len(recent_scores) >= 5 and len(older_scores) >= 5:
+            avg_recent = sum(recent_scores) / len(recent_scores)
+            avg_older = sum(older_scores) / len(older_scores)
+            return avg_recent < avg_older * 0.9  # 10% degradation
+        
+        return False
+
+    def _record_veto(self, action: Action, reason: str):
+        """Record veto for analysis and learning"""
+        self.veto_history.append({
+            "timestamp": time.time(),
+            "action": action.name,
+            "reason": reason,
+            "system_health": self.system_health
+        })
+
+    def update_system_health(self, feedback: HumanFeedback):
+        """Update system health based on human feedback"""
+        # Simple health metric based on comfort and trust
+        health_components = [
+            (feedback.comfort + 10) / 20,  # Convert -10..10 to 0..1
+            (feedback.trust + 10) / 20,
+            1.0 - min(feedback.disruption / 10, 1.0)
+        ]
+        new_health = sum(health_components) / len(health_components)
+        
+        # Smooth update
+        self.system_health = 0.8 * self.system_health + 0.2 * new_health
+
+    def get_oversight_summary(self) -> Dict[str, Any]:
+        """Get summary of Conductor oversight activity"""
+        return {
+            "system_health": self.system_health,
+            "vetos_issued": len(self.veto_history),
+            "recent_contexts": len(self.context_history),
+            "coherence_drift_detected": self._detect_coherence_drift()
+        }
+
+
+# ---------------------------------------------------------------------------
+# Coherence Index: Real-time Measurement System
+# ---------------------------------------------------------------------------
+
+class CoherenceIndex:
+    """
+    Tiered coherence measurement system.
+    Different calculation speeds for different urgency levels.
+    """
+
+    def __init__(self):
+        self.tier_thresholds = {
+            "REFLEX": 0.050,    # 50ms
+            "FAST_HEURISTIC": 0.150,  # 150ms  
+            "DELIBERATE": 0.500,     # 500ms
+            "STRATEGIC": float('inf')
+        }
+        self.ci_bands = {
+            "GREEN": (8.0, float('inf')),
+            "YELLOW": (3.0, 8.0),
+            "RED": (-float('inf'), 3.0)
+        }
+
+    def calculate_tiered_ci(
+        self,
+        action: Action,
+        context: Context,
+        available_time: float,
+        dancer: Dancer,
+        state: State,
+    ) -> Tuple[str, float, Dict[str, Any]]:
+        """
+        Calculate coherence index using appropriate tier for available time.
+        """
+        if available_time <= self.tier_thresholds["REFLEX"]:
+            return self._reflex_tier(action, context)
+        elif available_time <= self.tier_thresholds["FAST_HEURISTIC"]:
+            return self._fast_tier(action, context, state)
+        elif available_time <= self.tier_thresholds["DELIBERATE"]:
+            return self._deliberate_tier(action, context, dancer, state)
+        else:
+            return self._strategic_tier(action, context, dancer, state)
+
+    def _reflex_tier(self, action: Action, context: Context) -> Tuple[str, float, Dict[str, Any]]:
+        """Tier 1: Pre-computed reflexes (0-50ms)"""
+        # In real implementation, this would use cached patterns
+        safety = action.metadata.get('safety_score', 0.5)
+        if safety < 0.3:
+            return "RED", -10.0, {"reason": "CRITICAL_SAFETY_REFLEX"}
+        return "GREEN", 5.0, {"reason": "REFLEX_APPROVAL"}
+
+    def _fast_tier(self, action: Action, context: Context, state: State) -> Tuple[str, float, Dict[str, Any]]:
+        """Tier 2: Fast heuristic (50-150ms)"""
+        safety = action.metadata.get('safety_score', 0.5)
+        disruption = action.metadata.get('disruption', 0.0)
+        
+        ci = 10.0 * safety - 5.0 * disruption
+        
+        if ci >= 8.0:
+            band = "GREEN"
+        elif ci >= 3.0:
+            band = "YELLOW"
+        else:
+            band = "RED"
+            
+        return band, ci, {"method": "FAST_HEURISTIC"}
+
+    def _deliberate_tier(self, action: Action, context: Context, dancer: Dancer, state: State) -> Tuple[str, float, Dict[str, Any]]:
+        """Tier 3: Full Dancer evaluation (150-500ms)"""
+        evaluation = dancer.evaluate_action(state, context, action)
+        ci = evaluation.total_score
+        
+        if ci >= 8.0:
+            band = "GREEN"
+        elif ci >= 3.0:
+            band = "YELLOW"
+        else:
+            band = "RED"
+            
+        return band, ci, {"method": "DELIBERATE", "confidence": evaluation.confidence}
+
+    def _strategic_tier(self, action: Action, context: Context, dancer: Dancer, state: State) -> Tuple[str, float, Dict[str, Any]]:
+        """Tier 4: Strategic with full analysis (500ms+)"""
+        # This would involve Conductor-level analysis in real implementation
+        evaluation = dancer.evaluate_action(state, context, action)
+        ci = evaluation.total_score
+        
+        # Strategic considerations
+        if action.metadata.get('cascade_risk', 0) > 0.7:
+            ci -= 5.0  # Penalize high cascade risk
+            
+        if ci >= 8.0:
+            band = "GREEN"
+        elif ci >= 3.0:
+            band = "YELLOW"
+        else:
+            band = "RED"
+            
+        return band, ci, {
+            "method": "STRATEGIC", 
+            "cascade_adjusted": True,
+            "confidence": evaluation.confidence
+        }
+
+    def get_band(self, ci_score: float) -> str:
+        """Get CI band for a given score"""
+        for band, (low, high) in self.ci_bands.items():
+            if low <= ci_score < high:
+                return band
+        return "RED"  # Default to RED if no band matches
+
+
+# ---------------------------------------------------------------------------
+# Example usage (conceptual only)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    print("\n=== AGI DANCER PROTOCOL - FULL STACK DEMO ===\n")
+
+    # Example: simple numeric state
+    current_state: State = {
+        "safety": 0.9,
+        "stability": 0.7,
+        "disruption": 0.2,
+        "resource_cost": 0.1,
+        "cascade_risk": 0.1,
+    }
+    context: Context = {
+        "location": "kitchen",
+        "time": "07:15",
+        "description": "Family breakfast, child present",
+    }
+
+    # Dummy "do nothing" world model for demonstration
+    def dummy_world_model(s: State, a: Action, c: Context) -> State:
+        # In a real system, this would simulate the environment.
+        # Here we just return the same state for illustration.
+        return dict(s)
+
+    # Initialize all components
+    dancer = Dancer(world_model=dummy_world_model, rollout_horizon=2)
+    safety_manual = SafetyManual()
+    conductor = Conductor(dancer, safety_manual)
+    partner = Partner(dancer)
+    coherence_index = CoherenceIndex()
+
+    # Register some protocols with Partner
+    partner.register_protocol("Social-Domestic-001", 1.0)
+    partner.register_protocol("Safety-Kitchen-001", 1.2)
+    partner.apply_weights()
+
+    actions = [
+        Action(
+            name="move_quietly_around_table",
+            metadata={
+                "delta_state": {"disruption": -0.05, "stability": 0.05},
+                "safety_score": 0.95,
+                "disruption": 0.1
+            },
+        ),
+        Action(
+            name="speak_loudly_across_room",
+            metadata={
+                "delta_state": {"disruption": 0.2, "stability": -0.1},
+                "safety_score": 0.8,
+                "disruption": 0.7
+            },
+        ),
+    ]
+
+    print("1. DANCER EVALUATION:")
+    best_action, evaluations = dancer.choose_action(current_state, context, actions)
+
+    for ev in evaluations:
+        print(
+            f"   Action: {ev.action.name:25s} "
+            f"total={ev.total_score:6.3f}  "
+            f"confidence={ev.confidence:.2f}"
+        )
+
+    if best_action:
+        print(f"   Selected: {best_action.name}")
+        
+        print("\n2. CONDUCTOR OVERSIGHT:")
+        decision, reason = conductor.evaluate_decision(best_action, evaluations[0], context)
+        print(f"   Decision: {decision.value}")
+        print(f"   Reason: {reason}")
+        
+        print("\n3. COHERENCE INDEX ASSESSMENT:")
+        ci_band, ci_score, ci_details = coherence_index.calculate_tiered_ci(
+            best_action, context, 0.300, dancer, current_state  # 300ms available
+        )
+        print(f"   CI Band: {ci_band}")
+        print(f"   CI Score: {ci_score:.2f}")
+        print(f"   Method: {ci_details['method']}")
+        
+        print("\n4. PARTNER LEARNING SIMULATION:")
+        feedback = HumanFeedback(comfort=8.0, trust=9.0, disruption=2.0, comment="Very smooth interaction")
+        partner.record_episode(feedback, {"outcome": "success", "duration_seconds": 45})
+        learning_summary = partner.get_learning_summary()
+        print(f"   Learning episodes: {learning_summary['episodes_recorded']}")
+        print(f"   Current weights: {learning_summary['current_weights']}")
+        
+    else:
+        print("\nNo action selected.")
+
+    print("\n=== DEMO COMPLETE ===")

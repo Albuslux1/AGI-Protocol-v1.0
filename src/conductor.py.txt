@@ -1,0 +1,256 @@
+"""
+DISCLAIMER
+I (John Bollinger / AlbusLux) do NOT promise this code will work 100% or at all.
+This module is a CONCEPTUAL FRAMEWORK for the architecture and how the system
+*might* look and function in a coherence-first AGI design.
+It is intended for:
+- researchers
+- engineers
+- and alignment folks
+who want a starting point for implementing, critiquing, or extending the
+"AGI Dancer Protocol" idea.
+Use at your own risk. Treat as patterns, not production code.
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, Dict, List, Optional, Tuple
+import logging
+import statistics
+import time
+
+from dancer import Action, State, Context, ActionEvaluation, Dancer
+from partner import Partner, PartnerAssessment
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Enhanced enums and data structures
+# ---------------------------------------------------------------------------
+class CITier(Enum):
+    GREEN = auto()
+    YELLOW = auto()
+    RED = auto()
+
+
+class DecisionType(Enum):
+    APPROVE = auto()
+    REJECT = auto()
+    ESCALATE = auto()
+    DEFER = auto()
+
+
+class DecisionStrategy(Enum):
+    REFLEX = auto()     # 0-50ms
+    FAST = auto()       # 50-150ms
+    DELIBERATE = auto() # 150-500ms
+    STRATEGIC = auto()  # 500ms+
+
+
+class ConsensusLevel(Enum):
+    STRONG = auto()
+    MODERATE = auto()
+    WEAK = auto()
+    CONFLICTED = auto()
+
+
+@dataclass
+class CoherenceIndex:
+    overall: float
+    tier: CITier
+    components: Dict[str, float] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
+    trend: str = "stable"  # "improving", "stable", "degrading"
+
+
+@dataclass
+class ConductorDecision:
+    selected_action: Optional[Action]
+    decision_type: DecisionType
+    ci: CoherenceIndex
+    confidence: float = 1.0
+    consensus_level: ConsensusLevel = ConsensusLevel.STRONG
+    strategy_used: DecisionStrategy = DecisionStrategy.DELIBERATE
+    dancer_evaluations: List[ActionEvaluation] = field(default_factory=list)
+    partner_assessment: Optional[PartnerAssessment] = None
+    reasons: List[str] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class CIConfig:
+    raw_min: float = -10.0
+    raw_max: float = 10.0
+    green_threshold: float = 8.0
+    red_threshold: float = 3.0
+    trend_window: int = 10
+
+
+@dataclass
+class ContextToleranceConfig:
+    max_disruption_by_label: Dict[str, float] = field(default_factory=lambda: {
+        "hospital_surgery": 2.0,
+        "library": 4.0,
+        "office_meeting": 6.0,
+        "busy_subway": 12.0,
+        "emergency": 20.0,
+    })
+    default_max_disruption: float = 6.0
+
+    def get_tolerance(self, context: Context) -> float:
+        label = context.get("ci_context_label") or context.get("environment_type")
+        return self.max_disruption_by_label.get(label, self.default_max_disruption)
+
+
+class SafetyVerdict(Enum):
+    OK = auto()
+    WARN = auto()
+    BLOCK = auto()
+    ESCALATE = auto()
+
+
+class SafetyManual:
+    def evaluate(
+        self,
+        state: State,
+        context: Context,
+        action: Action,
+        ci: CoherenceIndex,
+        partner_assessment: Optional[PartnerAssessment],
+    ) -> Tuple[SafetyVerdict, List[str]]:
+        reasons: List[str] = []
+
+        if ci.tier is CITier.RED:
+            reasons.append("CI in RED band: auto-ESCALATE")
+            return SafetyVerdict.ESCALATE, reasons
+        if partner_assessment and partner_assessment.should_escalate:
+            reasons.append("Partner indicates high risk/uncertainty")
+            return SafetyVerdict.ESCALATE, reasons
+        if action.metadata.get('sets_precedent', False) and ci.tier is not CITier.GREEN:
+            reasons.append("Precedent-setting action requires GREEN band")
+            return SafetyVerdict.ESCALATE, reasons
+        if action.metadata.get('irreversible', False):
+            reasons.append("Irreversible action requires careful review")
+            return SafetyVerdict.ESCALATE, reasons
+
+        return SafetyVerdict.OK, reasons
+
+
+# ---------------------------------------------------------------------------
+# Conductor — Final Form
+# ---------------------------------------------------------------------------
+class Conductor:
+    """Conductor v1.1 — The Living Arbiter"""
+    def __init__(
+        self,
+        dancer: Dancer,
+        partner: Partner,
+        safety_manual: Optional[SafetyManual] = None,
+        ci_config: Optional[CIConfig] = None,
+        context_tolerance: Optional[ContextToleranceConfig] = None,
+        dancer_weight: float = 0.6,
+        partner_weight: float = 0.4,
+    ) -> None:
+        self.dancer = dancer
+        self.partner = partner
+        self.safety_manual = safety_manual or SafetyManual()
+        self.ci_config = ci_config or CIConfig()
+        self.context_tolerance = context_tolerance or ContextToleranceConfig()
+        self.dancer_weight = float(dancer_weight)
+        self.partner_weight = float(partner_weight)
+
+        self.decision_history: List[ConductorDecision] = []
+        self.system_health_trend: float = 1.0
+
+    def decide(
+        self,
+        state: State,
+        context: Context,
+        candidate_actions: List[Action],
+        time_budget_ms: Optional[int] = None,
+    ) -> ConductorDecision:
+        if not candidate_actions:
+            ci = self.compute_ci(state, context)
+            return self._create_decision(
+                action=None,
+                decision_type=DecisionType.DEFER,
+                ci=ci,
+                reasons=["No candidate actions supplied"],
+                time_budget_ms=time_budget_ms
+            )
+
+        strategy = self._select_strategy(time_budget_ms)
+        ci = self.compute_ci(state, context)
+
+        best_action, dancer_evals = self.dancer.choose_action(state, context, candidate_actions)
+        if best_action is None:
+            return self._create_decision(
+                action=None,
+                decision_type=DecisionType.DEFER,
+                ci=ci,
+                dancer_evals=dancer_evals,
+                reasons=["Dancer returned no best action"],
+                strategy=strategy
+            )
+
+        if strategy in [DecisionStrategy.REFLEX, DecisionStrategy.FAST]:
+            decision = self._fast_path_decision(state, context, ci, best_action, dancer_evals, strategy)
+        else:
+            if ci.tier is CITier.GREEN:
+                decision = self._decide_green_band(state, context, ci, best_action, dancer_evals)
+            elif ci.tier is CITier.YELLOW:
+                decision = self._decide_yellow_band(state, context, ci, candidate_actions, dancer_evals)
+            else:
+                decision = self._decide_red_band(state, context, ci, candidate_actions, dancer_evals)
+
+        self._update_system_health(decision)
+        self.decision_history.append(decision)
+        if len(self.decision_history) > self.ci_config.trend_window:
+            self.decision_history.pop(0)
+
+        return decision
+
+    # ... (all your existing perfect methods unchanged) ...
+
+    def _calculate_consensus(
+        self,
+        action: Optional[Action],
+        dancer_evals: List[ActionEvaluation],
+        partner_assessment: Optional[PartnerAssessment],
+        ci: CoherenceIndex,
+    ) -> ConsensusLevel:
+        if not action:
+            return ConsensusLevel.STRONG
+
+        dancer_score = self._get_dancer_score_for(action, dancer_evals)
+
+        agreements = total_checks = 0
+
+        if ci.tier is CITier.GREEN and dancer_score > 0:
+            agreements += 1
+        total_checks += 1
+
+        if partner_assessment and not partner_assessment.should_escalate:
+            agreements += 1
+            total_checks += 1
+
+        consensus_ratio = agreements / total_checks if total_checks else 1.0
+
+        if consensus_ratio >= 0.9:
+            return ConsensusLevel.STRONG
+        elif consensus_ratio >= 0.7:
+            return ConsensusLevel.MODERATE
+        elif consensus_ratio >= 0.5:
+            return ConsensusLevel.WEAK
+        else:
+            return ConsensusLevel.CONFLICTED
+
+    # ... rest of your flawless methods ...
+
+    @staticmethod
+    def _get_dancer_score_for(action: Action, dancer_evals: List[ActionEvaluation]) -> float:
+        for ev in dancer_evals:
+            if ev.action is action:
+                return ev.total_score
+        return 0.0
