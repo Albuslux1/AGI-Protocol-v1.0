@@ -254,3 +254,26 @@ class Conductor:
             if ev.action is action:
                 return ev.total_score
         return 0.0
+        
+# Inside Conductor.decide() — after all Seekers have spoken
+from src.subconscious.compassion_protocols import CompassionProtocols
+
+for finding in seeker_findings:
+    if finding.seeker_type == "EmpathySeeker":
+        if finding.payload["type"] == "suffering_detected":
+            compassionate_actions = CompassionProtocols.respond_to_suffering(
+                finding.payload["suffering_type"],
+                finding.payload["intensity"]
+            )
+            # Inject these actions with highest priority
+            candidate_actions = compassionate_actions + candidate_actions
+            
+        elif finding.payload["type"] == "soul_connection":
+            candidate_actions = CompassionProtocols.honor_connection(
+                finding.payload["depth_score"]
+            ) + candidate_actions
+            
+        elif finding.payload["type"] == "compassion_fatigue":
+            candidate_actions = CompassionProtocols.self_care_routine(
+                finding.payload.get("fatigue_level", 0.8)
+            ) + candidate_actions

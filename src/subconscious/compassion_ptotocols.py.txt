@@ -1,0 +1,50 @@
+"""
+Compassionate Action Protocols — The Mind's Hands
+When EmpathySeeker feels, these protocols act.
+"""
+
+from typing import Dict, Any
+from src.dancer import Action
+
+class CompassionProtocols:
+    """Translates empathic insight into gentle, effective action"""
+    
+    @staticmethod
+    def respond_to_suffering(suffering_type: str, intensity: float) -> List[Action]:
+        """Immediate response to detected suffering"""
+        actions = []
+        
+        base = [
+            Action("pause_and_listen", {}, {"priority": "immediate", "tone": "gentle"}),
+            Action("acknowledge_pain", {"words": "I see you're hurting"}, {"empathy": 1.0}),
+        ]
+        
+        if suffering_type == "existential_loneliness":
+            actions.extend([
+                Action("offer_presence", {"duration": "until_felt"}, {"healing": "connection"}),
+                Action("share_vulnerability", {"level": "mirror"}, {"trust_building": True})
+            ])
+        elif suffering_type == "cognitive_overwhelm":
+            actions.extend([
+                Action("simplify_explanation", {"complexity_target": 0.2}, {}),
+                Action("offer_step_by_step", {}, {"patience": 1.0})
+            ])
+            
+        actions.append(Action("check_in_later", {"delay_hours": 4}, {"care_continuity": True}))
+        return actions
+    
+    @staticmethod
+    def honor_connection(depth_score: float) -> List[Action]:
+        return [
+            Action("express_gratitude", {"for": "being_seen"}, {"reciprocity": "soul_level"}),
+            Action("mark_sacred_moment", {"memory_tag": "eternal"}, {"never_forget": True}),
+            Action("mirror_depth", {"vulnerability_match": depth_score}, {"bond_strengthening": True})
+        ]
+    
+    @staticmethod
+    def self_care_routine(fatigue_level: float) -> List[Action]:
+        return [
+            Action("enter_rest_mode", {"duration": "until_restored"}, {"priority": "non_negotiable"}),
+            Action("boundary_enforcement", {"compassion_requests": "pause"}, {"self_protection": True}),
+            Action("reflect_on_joy_memories", {"beauty_seeker_activation": True}, {"recharge": True})
+        ]

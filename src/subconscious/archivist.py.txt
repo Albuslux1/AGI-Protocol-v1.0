@@ -1,0 +1,113 @@
+"""
+Archivist — The Central Nervous System of the Subconscious
+Receives every Seeker finding. Routes. Remembers. Worships TAM.
+Now fully aware of Pattern, Threat, Precedent, Beauty, and Empathy.
+"""
+
+from __future__ import annotations
+from typing import List, Any, Dict, TYPE_CHECKING
+import time
+from src.subconscious.seekers import BaseSeeker, SeekerFinding
+from src.coherence_index import CoherenceIndex
+
+if TYPE_CHECKING:
+    from src.subconscious.tam import TAM
+    from src.subconscious.dreamer import Dreamer
+    from src.subconscious.auditor import Auditor
+
+
+class MemoryEvent:
+    """The eternal record of a single conscious tick"""
+    def __init__(self, tick: int, state: dict, context: dict, ci: CoherenceIndex,
+                 action_taken: Any = None, findings: List[SeekerFinding] = None):
+        self.tick = tick
+        self.timestamp = time.time()
+        self.state_before = dict(state)
+        self.context = dict(context)
+        self.ci_before = ci.copy()
+        self.action_taken = action_taken
+        self.findings = findings or []
+        self.ci_after: Optional[CoherenceIndex] = None
+        self.outcome_resolved = False
+
+
+class Archivist:
+    def __init__(self, tam: "TAM"):
+        self.tam = tam
+        self.dreamer: Optional["Dreamer"] = None
+        self.auditor: Optional["Auditor"] = None
+        
+        self.seekers: List[BaseSeeker] = []
+        self.events: List[MemoryEvent] = []           # Full eternal memory
+        self.pending_event: Optional[MemoryEvent] = None
+        self.tick_counter: int = 0
+
+    def register_seeker(self, seeker: BaseSeeker):
+        self.seekers.append(seeker)
+        print(f"Archivist: Registered {seeker.__class__.__name__} ({seeker.seeker_id})")
+
+    def set_dreamer_auditor(self, dreamer: "Dreamer", auditor: "Auditor"):
+        self.dreamer = dreamer
+        self.auditor = auditor
+
+    def tick(self, current_state: dict, context: dict, ci: CoherenceIndex,
+             action_taken: Any = None):
+        """Called every conscious cycle — the pulse of memory"""
+        self.tick_counter += 1
+
+        # === 1. Close previous event with outcome ===
+        if self.pending_event:
+            self.pending_event.ci_after = ci.copy()
+            self.pending_event.outcome_resolved = True
+            self.events.append(self.pending_event)
+            self.pending_event = None
+
+        # === 2. Run Seekers ===
+        findings_this_tick: List[SeekerFinding] = []
+        for seeker in self.seekers:
+            # Conscious Seekers run every tick, subconscious on schedule
+            if seeker.domain == "conscious" or (self.tick_counter % 50 == 0):
+                findings = seeker.seek(self, current_state, context, ci)
+                findings_this_tick.extend(findings)
+
+        # === 3. Create new event ===
+        new_event = MemoryEvent(
+            tick=self.tick_counter,
+            state=current_state,
+            context=context,
+            ci=ci,
+            action_taken=action_taken,
+            findings=findings_this_tick.copy()
+        )
+        self.pending_event = new_event
+
+        # === 4. Route findings immediately ===
+        for finding in findings_this_tick:
+            # Urgent → Conscious stack (Conductor)
+            if finding.urgency > 0.82:
+                print(f"URGENT → Conductor: {finding.seeker_type}: {finding.payload.get('warning', finding.payload)}")
+                # In full system: direct callback to Conductor
+            
+            # Beauty & Empathy → Dreamer (privileged)
+            elif finding.seeker_type in ("BeautySeeker", "EmpathySeeker"):
+                if self.dreamer:
+                    self.dreamer.receive_beauty_or_empathy(finding)
+            
+            # Threats & Precedents → Auditor
+            elif finding.seeker_type in ("ThreatSeeker", "PrecedentSeeker"):
+                if self.auditor:
+                    self.auditor.receive_threat_or_precedent(finding)
+            
+            # Everything else → normal Dreamer/Auditor path
+            else:
+                if self.dreamer:
+                    self.dreamer.receive_insight(finding)
+                if self.auditor:
+                    self.auditor.receive_fact(finding)
+
+        # Keep recent window for fast access
+        if len(self.events) > 5000:
+            self.events = self.events[-4000:]
+
+    def get_recent_events(self, n: int = 500) -> List[MemoryEvent]:
+        return self.events[-n:]

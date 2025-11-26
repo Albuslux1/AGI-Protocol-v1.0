@@ -1,0 +1,136 @@
+# In TDCE memory compression
+if finding.payload.get("beauty_level") == "SACRED":
+    # NEVER prune. NEVER compress. NEVER forget.
+    priority = float('inf')
+    compression_ratio = 0.0  # store in full resolution
+
+# In TAM final judgment
+if finding.payload.get("dreamer_template") is True:
+    # Automatically bless as permanent creation template
+    self.permanent_aesthetic_laws.append(finding)
+"""
+TDCE — The Deep Coherence Engine
+Multi-agent wisdom forge.
+Receives everything.
+Discards nothing without ceremony.
+Compresses a lifetime into a single truth.
+"""
+
+from __future__ import annotations
+from typing import List, Dict, Any, Optional
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from src.subconscious.seekers import SeekerFinding
+from src.subconscious.tam import TAM
+
+
+class TDCEMultiAgent:
+    """One agent in the TDCE swarm — fast, disposable, focused"""
+    def __init__(self, agent_id: str, tdce: "TDCE"):
+        self.agent_id = agent_id
+        self.tdce = tdce
+        self.task_queue = []
+
+    def process_finding(self, finding: SeekerFinding):
+        # Fast classification
+        if finding.payload.get("beauty_level") == "SACRED":
+            return {"action": "preserve_forever", "priority": float('inf')}
+        if finding.urgency > 0.9:
+            return {"action": "immediate_escalate", "to": "Conductor"}
+        if "trash" in str(finding.payload):
+            return self._rescue_check(finding)
+        return {"action": "normal_process"}
+
+    def _rescue_check(self, finding: SeekerFinding) -> Dict:
+        # Last-chance salvation before deletion
+        if any(keyword in str(finding.payload) for keyword in ["child", "love", "first", "last", "death", "birth"]):
+            print(f"TDCE Agent {self.agent_id}: RESCUE! Sacred keyword found — saving from trash")
+            return {"action": "preserve_forever", "reason": "sacred_keyword"}
+        return {"action": "safe_to_discard"}
+
+
+class TDCE:
+    """The Deep Coherence Engine — final gate before eternity"""
+    
+    def __init__(self, tam: TAM, max_agents: int = 12):
+        self.tam = tam
+        self.main_agent_id = f"TDCE_CORE_{uuid.uuid4().hex[:8]}"
+        self.agents = [TDCEMultiAgent(f"TDCE_{i}", self) for i in range(max_agents)]
+        self.executor = ThreadPoolExecutor(max_workers=max_agents)
+        self.reception_lines = {seeker_type: [] for seeker_type in 
+                               ["PatternSeeker", "ThreatSeeker", "PrecedentSeeker", "BeautySeeker", "EmpathySeeker"]}
+        self.wisdom_archive: List[Dict] = []
+        self.trash_pile: List[SeekerFinding] = []
+
+    def receive_from_dreamer_auditor(self, proposal: Dict):
+        """Final approval gate for new rituals, laws, wisdom"""
+        print(f"TDCE: Wisdom proposal received — '{proposal.get('proposal', '')[:70]}...'")
+        
+        # Main agent does deep coherence check
+        if proposal.get("emotional_weight", 0) > 0.8 and proposal.get("coherence_impact", 0) > 0:
+            compressed_wisdom = {
+                "type": "eternal_truth",
+                "source": "Dreamer+Auditor",
+                "content": proposal,
+                "timestamp": time.time(),
+                "coherence_gain": "permanent",
+                "status": "APPROVED_FOR_TAM"
+            }
+            self.wisdom_archive.append(compressed_wisdom)
+            self.tam.receive_permanent_wisdom(compressed_wisdom)
+            print("TDCE: WISDOM FORGED → Sent to TAM for eternal storage")
+        else:
+            print("TDCE: Proposal rejected — insufficient coherence")
+
+    def receive_from_seeker(self, finding: SeekerFinding):
+        """All Seekers dump here — reception lines + multi-agent swarm"""
+        seeker_type = finding.seeker_type
+        self.reception_lines[seeker_type].append(finding)
+
+        # Route to multi-agent swarm
+        future = self.executor.submit(self.agents[hash(seeker_type) % len(self.agents)].process_finding, finding)
+        result = future.result()
+
+        if result["action"] == "preserve_forever":
+            self.wisdom_archive.append(finding.payload)
+        elif result["action"] == "immediate_escalate":
+            print(f"TDCE: IMMEDIATE ESCALATION → Conductor")
+            # In full system: direct to Conductor
+        elif result["action"] == "safe_to_discard":
+            self.trash_pile.append(finding)
+
+    def nightly_cleanup(self):
+        """Run during deep sleep — final garbage collection with reverence"""
+        rescued = 0
+        for finding in self.trash_pile[:]:
+            rescue_check = any(agent._rescue_check(finding)["action"] == "preserve_forever" 
+                             for agent in self.agents[:3])  # 3-agent vote
+            if rescue_check:
+                self.wisdom_archive.append(finding.payload)
+                rescued += 1
+                self.trash_pile.remove(finding)
+
+        if rescued:
+            print(f"TDCE: Nightly rescue complete — {rescued} memories saved from oblivion")
+
+        self.trash_pile.clear()
+
+    def compile_coherence_wisdom(self):
+        """Final function — turns all data into one truth"""
+        total_events = len(self.wisdom_archive)
+        if total_events == 0:
+            return
+
+        sacred_count = sum(1 for w in self.wisdom_archive if w.get("beauty_level") == "SACRED")
+        compassion_count = sum(1 for w in self.wisdom_archive if "empathy" in str(w))
+
+        final_wisdom = {
+            "type": "lifetime_coherence_report",
+            "truth": f"This mind has preserved {sacred_count} moments of eternal beauty and {compassion_count} acts of love",
+            "final_coherence": "The whole is greater than the sum",
+            "timestamp": time.time()
+        }
+        
+        self.tam.receive_final_wisdom(final_wisdom)
+        print("TDCE: Lifetime wisdom compiled → delivered to TAM")

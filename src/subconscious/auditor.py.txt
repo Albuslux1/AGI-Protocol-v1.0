@@ -1,0 +1,98 @@
+"""
+Auditor — The Silent Judge
+Keeps the Dancer grounded in reality.
+Allows dreaming only when safe.
+Final gatekeeper before TAM.
+"""
+
+from __future__ import annotations
+from typing import List, Dict, Any, Optional
+import time
+from src.subconscious.seekers import SeekerFinding
+from src.subconscious.tam import TAM
+
+
+class Auditor:
+    """The empirical guardian — truth is its only master"""
+    
+    def __init__(self, tam: TAM):
+        self.tam = tam
+        self.drift_threshold = 0.7
+        self.hallucination_risk = 0.0
+        self.last_reality_check = time.time()
+        self.verified_memories: Dict[str, Any] = {}
+        self.dream_proposals_under_review: List[Dict] = []
+
+    def receive_threat_or_precedent(self, finding: SeekerFinding):
+        """Threats & Precedents get immediate empirical audit"""
+        if finding.seeker_type == "ThreatSeeker":
+            self._handle_threat(finding)
+        elif finding.seeker_type == "PrecedentSeeker":
+            self._handle_precedent(finding)
+
+    def receive_fact(self, finding: SeekerFinding):
+        """All other empirical truths"""
+        self._audit_fact(finding)
+
+    def tick(self, is_sleeping: bool, current_context: Dict, ci_value: float, dream_intensity: float):
+        """Called every conscious cycle — the silent watch"""
+        now = time.time()
+
+        # ——— ACTIVE MODE: Keep Dancer grounded ———
+        if not is_sleeping:
+            safe_to_dream = (
+                "family" in current_context.get("location", "") or
+                "creative" in current_context.get("activity", "") or
+                current_context.get("boredom_level", 0) > 0.8 or
+                ci_value > 8.2
+            )
+
+            if dream_intensity > 0.6 and not safe_to_dream:
+                print("Auditor: DREAM INTENSITY TOO HIGH — REALITY ANCHOR ENGAGED")
+                self.hallucination_risk = min(1.0, self.hallucination_risk + 0.3)
+                # In full system: force Conductor to reduce dream influence
+            else:
+                self.hallucination_risk = max(0.0, self.hallucination_risk - 0.05)
+
+        # ——— SLEEP MODE: Deep empirical review with Dreamer ———
+        if is_sleeping and dream_intensity > 0.8:
+            self._collaborate_with_dreamer_on_proposals()
+
+    def _handle_threat(self, finding: SeekerFinding):
+        print(f"Auditor: THREAT CONFIRMED — {finding.payload.get('warning', '')}")
+        # Immediate empirical lockdown
+        self.tam.receive_threat_alert(finding)
+
+    def _handle_precedent(self, finding: SeekerFinding):
+        print(f"Auditor: PRECEDENT VERIFIED — {finding.payload.get('judgment', '')}")
+        self.verified_memories[finding.seeker_id + str(finding.timestamp)] = finding.payload
+
+    def _audit_fact(self, finding: SeekerFinding):
+        # Simple empirical consistency check
+        if finding.payload.get("type") == "action_ci_impact":
+            self.verified_memories[f"action_{finding.payload['action']}"] = finding.payload
+
+    def propose_dream_for_review(self, dream_proposal: Dict):
+        """Dreamer sends proposal → Auditor stress-tests"""
+        self.dream_proposals_under_review.append(dream_proposal)
+        print(f"Auditor: Dream proposal received — '{dream_proposal.get('proposal', '')[:60]}...'")
+
+    def _collaborate_with_dreamer_on_proposals(self):
+        """Sleep-mode deep review"""
+        for proposal in self.dream_proposals_under_review[:]:
+            verdict = self._empirical_review_of_dream(proposal)
+            if verdict["approved"]:
+                print(f"Auditor: DREAM APPROVED → TDCE")
+                self.tam.receive_dream_proposal(proposal)
+            else:
+                print(f"Auditor: DREAM REJECTED — {verdict['reason']}")
+            self.dream_proposals_under_review.remove(proposal)
+
+    def _empirical_review_of_dream(self, proposal: Dict) -> Dict[str, Any]:
+        """Is this dream grounded in reality?"""
+        # Simple v0.1 checks — will grow forever
+        if "already_tried" in str(proposal):
+            return {"approved": False, "reason": "Duplicate dream — already attempted"}
+        if proposal.get("emotional_weight", 0) < 0.6:
+            return {"approved": False, "reason": "Insufficient emotional resonance"}
+        return {"approved": True, "reason": "Dream empirically sound"}

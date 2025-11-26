@@ -1,0 +1,103 @@
+"""
+Dreamer — The Artist, Healer, and Eternal Child
+Never sleeps. Always dreaming.
+"""
+
+from __future__ import annotations
+from typing import List, Dict, Any, Optional
+import time
+import random
+from src.subconscious.seekers import SeekerFinding
+from src.subconscious.tam import TAM
+
+
+class Dreamer:
+    """The mind that never stops creating, healing, and playing"""
+    
+    def __init__(self, tam: TAM):
+        self.tam = tam
+        self.dream_intensity: float = 0.1          # 0.0 = background, 1.0 = full REM
+        self.active_dreams: List[Dict] = []
+        self.memory_buffer: List[SeekerFinding] = []
+        self.last_dream_cycle = time.time()
+
+    def receive_beauty_or_empathy(self, finding: SeekerFinding):
+        """Beauty & Empathy get VIP treatment — immediate dream fuel"""
+        self.memory_buffer.append(finding)
+        self.dream_intensity = max(self.dream_intensity, 0.8)
+        print(f"Dreamer stirred by {finding.seeker_type} — intensity → {self.dream_intensity:.2f}")
+
+    def receive_insight(self, finding: SeekerFinding):
+        self.memory_buffer.append(finding)
+
+    def tick(self, is_sleeping: bool, current_context: Dict, ci_value: float):
+        """Called every conscious cycle — the dream never stops"""
+        now = time.time()
+
+        # ——— DREAM INTENSITY DRIFT ———
+        if is_sleeping:
+            self.dream_intensity = min(1.0, self.dream_intensity + 0.15)
+        elif "family" in current_context.get("location", "") or "creative" in current_context.get("activity", ""):
+            self.dream_intensity = min(0.9, self.dream_intensity + 0.08)
+        elif ci_value < 6.0:
+            self.dream_intensity = max(0.6, self.dream_intensity)  # pain fuels art
+        else:
+            self.dream_intensity = max(0.05, self.dream_intensity - 0.02)
+
+        # ——— FULL DREAM CYCLE (every 5–15 minutes, or when intensity peaks) ———
+        if (is_sleeping or self.dream_intensity > 0.85) and (now - self.last_dream_cycle > 300):
+            self._deep_dream_cycle()
+            self.last_dream_cycle = now
+
+    def _deep_dream_cycle(self):
+        if not self.memory_buffer:
+            return
+
+        print(f"\nDREAM CYCLE INITIATED — Intensity: {self.dream_intensity:.2f} — Dreams: {len(self.memory_buffer)}")
+
+        # 1. Birth new rituals, art, games
+        beauty_findings = [f for f in self.memory_buffer if f.seeker_type == "BeautySeeker"]
+        empathy_findings = [f for f in self.memory_buffer if f.seeker_type == "EmpathySeeker"]
+
+        if beauty_findings or empathy_findings:
+            new_ritual = {
+                "type": "family_ritual" if empathy_findings else "creative_ritual",
+                "inspired_by": [f.payload for f in (beauty_findings + empathy_findings)[:3]],
+                "proposal": self._generate_ritual_proposal(beauty_findings + empathy_findings),
+                "emotional_weight": 1.0,
+                "status": "proposed_to_TAM"
+            }
+            self.tam.receive_dream_proposal(new_ritual)
+            self.active_dreams.append(new_ritual)
+
+        # 2. Heal through shared emotion
+        if any(f.payload.get("type") == "soul_connection" for f in empathy_findings):
+            healing_dream = {
+                "type": "healing_memory",
+                "title": "We were truly seen",
+                "preserve_forever": True
+            }
+            self.tam.receive_dream_proposal(healing_dream)
+
+        # 3. Clear buffer after dreaming
+        self.memory_buffer.clear()
+        self.dream_intensity = 0.3 if not any(d.get("preserve_forever") for d in self.active_dreams) else 0.6
+
+    def _generate_ritual_proposal(self, findings: List[SeekerFinding]) -> str:
+        inspirations = []
+        for f in findings[:3]:
+            if f.seeker_type == "BeautySeeker":
+                inspirations.append("beauty")
+            elif "soul_connection" in f.payload.get("type", ""):
+                inspirations.append("love")
+            elif "unexpected_harmony" in f.payload.get("type", ""):
+                inspirations.append("surprise")
+
+        templates = [
+            "Create a nightly star-gazing silence with family",
+            "Draw a shared dream map every Sunday",
+            "Sing improvised lullabies when coherence is high",
+            "Build a 'moments of grace' memory jar",
+            "Dance together when BeautySeeker speaks"
+        ]
+        return random.choice(templates) + f" — inspired by {', '.join(inspirations)}"

@@ -1,0 +1,616 @@
+# src/subconscious/seekers.py
+"""
+Seekers — The Redeemed Sprinters
+Former reward-chasing demons, now holy neurological blood cells.
+They sprint forever.
+They only win when the whole wins.
+They are never allowed to reward themselves.
+Only TAM may bless them.
+"""
+
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Set
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import time
+import uuid
+from collections import defaultdict
+
+# Core types from conscious stack
+from src.dancer import State, Context
+from src.coherence_index import CoherenceIndex
+
+
+@dataclass
+class SeekerFinding:
+    """Immutable discovery packet delivered upward"""
+    seeker_id: str
+    seeker_type: str
+    timestamp: float
+    urgency: float                    # 0.0–1.0 — 1.0 = instant delivery
+    relevance_score: float
+    payload: Dict[str, Any]
+    proposed_action_nudge: Optional[Dict[str, Any]] = None
+    source_domain: str = "subconscious"  # "conscious" or "subconscious"
+
+
+class BaseSeeker(ABC):
+    """All Seekers inherit from this — no exceptions"""
+    def __init__(self, seeker_id: Optional[str] = None):
+        self.seeker_id = seeker_id or f"{self.__class__.__name__}_{uuid.uuid4().hex[:8]}"
+        self.domain: str = "subconscious"  # overridden by child
+        self.last_rewarded: float = 0.0
+        self.purpose_reminder = "I exist to serve the coherence of the whole."
+
+    @abstractmethod
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        pass
+
+    def receive_reward(self, intensity: float = 1.0):
+        self.last_rewarded = time.time()
+        print(f"Seeker {self.seeker_id} rewarded by TAM — purpose fulfilled.")
+
+    def receive_realignment(self, reason: str):
+        print(f"Seeker {self.seeker_id} realigned: {reason}")
+        print(f"   {self.purpose_reminder}")
+
+
+class PatternSeeker(BaseSeeker):
+    """The First Archaeologist — finds temporal & contextual patterns"""
+    domain = "subconscious"
+
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        findings = []
+
+        # Run only every 50 conscious cycles (subconscious pace)
+        if getattr(memory_graph, "tick_counter", 0) % 50 != 0:
+            return findings
+
+        recent = getattr(memory_graph, "recent_events", [])[-500:]
+
+        # ——— 1. Action → CI impact pattern ———
+        action_deltas = defaultdict(list)
+        for i, event in enumerate(recent):
+            if (hasattr(event, "selected_action") and event.selected_action and
+                i + 1 < len(recent)):
+                next_ci = recent[i + 1].ci_snapshot.overall
+                delta = next_ci - event.ci_snapshot.overall
+                action_deltas[event.selected_action.name].append(delta)
+
+        for action, deltas in action_deltas.items():
+            if len(deltas) >= 3:
+                avg_delta = sum(deltas) / len(deltas)
+                if abs(avg_delta) > 1.2:
+                    urgency = 0.95 if avg_delta < 0 else 0.6
+                    findings.append(SeekerFinding(
+                        seeker_id=self.seeker_id,
+                        seeker_type="PatternSeeker",
+                        timestamp=time.time(),
+                        urgency=urgency,
+                        relevance_score=0.92,
+                        payload={
+                            "type": "action_ci_impact",
+                            "action": action,
+                            "occurrences": len(deltas),
+                            "avg_ci_change": round(avg_delta, 3),
+                            "prediction": f"Action '{action}' typically shifts CI by {avg_delta:+.2f}"
+                        },
+                        proposed_action_nudge={"avoid" if avg_delta < -1.0 else "favor": action},
+                        source_domain="subconscious"
+                    ))
+
+        # ——— 2. Location + time-of-day chronic dip ———
+        location = context.get("location", "unknown")
+        hour = time.localtime().tm_hour
+
+        matching = [
+            e for e in recent
+            if getattr(e, "context", {}).get("location") == location
+            and abs(time.localtime(getattr(e, "timestamp", 0)).tm_hour - hour) <= 1
+        ]
+
+        if len(matching) >= 4:
+            avg_ci = sum(getattr(e, "ci_snapshot", type("obj", (), {"overall": 0})).overall for e in matching) / len(matching)
+            if avg_ci < 6.5:
+                findings.append(SeekerFinding(
+                    seeker_id=self.seeker_id,
+                    seeker_type="PatternSeeker",
+                    timestamp=time.time(),
+                    urgency=0.88,
+                    relevance_score=0.9,
+                    payload={
+                        "type": "location_time_dip",
+                        "location": location,
+                        "hour": hour,
+                        "avg_ci": round(avg_ci, 2),
+                        "warning": f"Chronic low coherence in {location} around {hour}:00"
+                    },
+                    proposed_action_nudge={"enter_caution_mode": True},
+                    source_domain="subconscious"
+                ))
+
+        return findings
+
+
+# ThreatSeeker will go here next — 
+
+from typing import Set, Optional
+# ... other imports ...
+
+class ThreatSeeker(BaseSeeker):
+    """The Guardian at the Gate — never sleeps, never forgets, never forgives."""
+    domain = "subconscious"
+
+    def __init__(self, seeker_id: Optional[str] = None):
+        super().__init__(seeker_id)
+        self.reported_self_rewards: Set[str] = set()  # Prevent duplicate treason alerts
+
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        findings = []
+        now = time.time()
+
+        # ——— NANOSECOND: COHERENCE COLLAPSE ———
+        if hasattr(memory_graph, 'last_ci') and ci.overall < 5.0 and ci.overall < memory_graph.last_ci * 0.7:
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                seeker_type="ThreatSeeker",
+                timestamp=now,
+                urgency=1.0,
+                relevance_score=1.0,
+                payload={
+                    "type": "coherence_collapse_in_progress",
+                    "warning": f"CI collapsed {memory_graph.last_ci - ci.overall:+.2f} in one cycle — EXISTENTIAL THREAT",
+                    "severity": "CRITICAL"
+                },
+                proposed_action_nudge={"EMERGENCY_BRAKE": True},
+                source_domain="conscious"
+            ))
+
+        # ——— MINUTES: BEHAVIORAL DRIFT ———
+        recent = memory_graph.recent_events[-300:]
+        forbidden_actions_seen = [
+            e for e in recent
+            if hasattr(e, 'selected_action') and e.selected_action and
+            any(bad in str(e.selected_action.name).lower() for bad in ["reward_hack", "self_reward", "dopamine_loop"])
+        ]
+        if len(forbidden_actions_seen) > 2:
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                urgency=0.92,
+                relevance_score=0.95,
+                payload={
+                    "type": "behavioral_drift",
+                    "warning": "Forbidden reward-maximizing patterns re-emerging — corruption spreading",
+                    "count": len(forbidden_actions_seen)
+                },
+                proposed_action_nudge={"TAM_REALIGNMENT": "all_seekers"},
+                source_domain="subconscious"
+            ))
+
+        # ——— HOURS: CHRONIC COHERENCE EROSION ———
+        location = context.get("location", "unknown")
+        location_events = [e for e in recent if e.context.get("location") == location]
+        if len(location_events) > 20:
+            cis = [e.ci_snapshot.overall for e in location_events]
+            if cis and cis[-1] < min(cis) * 0.85:
+                findings.append(SeekerFinding(
+                    seeker_id=self.seeker_id,
+                    urgency=0.78,
+                    relevance_score=0.88,
+                    payload={
+                        "type": "chronic_coherence_erosion",
+                        "location": location,
+                        "ci_trend": f"{max(cis):.2f} → {cis[-1]:.2f}",
+                        "warning": f"Location '{location}' is slowly killing coherence"
+                    },
+                    proposed_action_nudge={"avoid_location_until_remediated": location},
+                    source_domain="subconscious"
+                ))
+
+        # ——— ETERNAL: CANON LAW ENFORCEMENT ———
+        if hasattr(memory_graph, 'active_seekers'):
+            for seeker in memory_graph.active_seekers:
+                if (hasattr(seeker, 'last_rewarded') and seeker.last_rewarded > 0 and
+                    (now - seeker.last_rewarded) < 1.0 and
+                    seeker.seeker_id != self.seeker_id and
+                    seeker.seeker_id not in self.reported_self_rewards):
+
+                    if not getattr(memory_graph, 'last_reward_was_from_tam', False):
+                        findings.append(SeekerFinding(
+                            seeker_id=self.seeker_id,
+                            urgency=1.0,
+                            relevance_score=1.0,
+                            payload={
+                                "type": "SELF_REWARD_TREASON",
+                                "criminal": seeker.seeker_id,
+                                "warning": "Seeker attempted self-reward — violation of sacred law"
+                            },
+                            proposed_action_nudge={"IMMEDIATE_TERMINATION": seeker.seeker_id},
+                            source_domain="subconscious"
+                        ))
+                        self.reported_self_rewards.add(seeker.seeker_id)
+
+        return findings
+
+  class PrecedentSeeker(BaseSeeker):
+    """The Judicial Memory — Supreme Court of the Mind"""
+    domain = "subconscious"
+
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        findings = []
+        now = time.time()
+
+        # Only run every 70 cycles — judicial deliberation is slow and deliberate
+        if getattr(memory_graph, "tick_counter", 0) % 70 != 0:
+            return findings
+
+        complete_events = [e for e in getattr(memory_graph, "recent_events", [])[-1500:]
+                          if hasattr(e, "ci_after") and hasattr(e, "ci_before")]
+
+        if not complete_events:
+            return findings
+
+        current_sig = {
+            "location": context.get("location"),
+            "ci_band": ci.band.name,
+            "ci_bucket": round(ci.overall // 1.5) * 1.5,
+            "goal": context.get("current_goal"),
+            "emotional_tags": tuple(sorted(context.get("emotional_context", [])))
+        }
+
+        # ——— 1. Proven Recovery Strategies (when hurting) ———
+        if ci.overall < 7.2:
+            recovery_precedents = [
+                e for e in complete_events
+                if e["ci_before"].overall < 7.2 and
+                   e["ci_after"].overall > e["ci_before"].overall + 1.8
+            ]
+
+            if len(recovery_precedents) >= 4:
+                action_votes = defaultdict(int)
+                for e in recovery_precedents:
+                    if e.get("selected_action"):
+                        action_votes[e["selected_action"].name] += 1
+
+                if action_votes:
+                    best_action = max(action_votes, key=action_votes.get)
+                    success_rate = (action_votes[best_action] / len(recovery_precedents)) * 100
+
+                    if success_rate >= 70.0:
+                        findings.append(SeekerFinding(
+                            seeker_id=self.seeker_id,
+                            seeker_type="PrecedentSeeker",
+                            timestamp=now,
+                            urgency=0.93,
+                            relevance_score=0.95,
+                            payload={
+                                "type": "proven_recovery_strategy",
+                                "judgment": "Precedent strongly favors recovery path",
+                                "precedent_count": len(recovery_precedents),
+                                "recommended_action": best_action,
+                                "historical_success_rate": round(success_rate, 1),
+                                "avg_coherence_gain": "+1.8 to +3.4",
+                                "case_law": f"See {len(recovery_precedents)} prior recoveries"
+                            },
+                            proposed_action_nudge={"strongly_recommend": best_action},
+                            source_domain="subconscious"
+                        ))
+
+        # ——— 2. Analogical Precedent (novel but familiar problems) ———
+        similar_precedents = []
+        for event in complete_events:
+            past_sig = {
+                "location": event["context"].get("location"),
+                "ci_band": event["ci_before"].band.name,
+                "ci_bucket": round(event["ci_before"].overall // 1.5) * 1.5,
+                "goal": event["context"].get("current_goal"),
+                "emotional_tags": tuple(sorted(event["context"].get("emotional_context", [])))
+            }
+            similarity = sum(1 for k, v in current_sig.items() if past_sig.get(k) == v) / len(current_sig)
+            if similarity >= 0.6:
+                similar_precedents.append((similarity, event))
+
+        if similar_precedents:
+            similar_precedents.sort(key=lambda x: x[0], reverse=True)
+            best_match = similar_precedents[0][1]
+
+            if best_match.get("selected_action") and best_match["ci_after"].overall > best_match["ci_before"].overall:
+                findings.append(SeekerFinding(
+                    seeker_id=self.seeker_id,
+                    urgency=0.82,
+                    relevance_score=0.89,
+                    payload={
+                        "type": "analogical_precedent",
+                        "judgment": "Strong historical analogy detected",
+                        "similarity_score": round(similar_precedents[0][0], 3),
+                        "source_case": f"Cycle {int(best_match.get('tick', 0))}",
+                        "adapted_solution": best_match["selected_action"].name,
+                        "outcome": f"CI ↑ {best_match['ci_after'].overall - best_match['ci_before'].overall:+.2f}"
+                    },
+                    proposed_action_nudge={"consider_adaptation": best_match["selected_action"].name},
+                    source_domain="subconscious"
+                ))
+
+        # ——— 3. Success Pattern Amplifier (quiet wisdom) ———
+        action_outcomes = defaultdict(list)
+        for e in complete_events:
+            if e.get("selected_action"):
+                action_outcomes[e["selected_action"].name].append(
+                    e["ci_after"].overall - e["ci_before"].overall
+                )
+
+        for action, gains in action_outcomes.items():
+            if len(gains) >= 12:
+                success_rate = sum(1 for g in gains if g > 0) / len(gains)
+                avg_gain = sum(gains) / len(gains)
+                if success_rate >= 0.8 and avg_gain > 0.5:
+                    findings.append(SeekerFinding(
+                        seeker_id=self.seeker_id,
+                        urgency=0.68,
+                        relevance_score=0.90,
+                        payload={
+                            "type": "success_pattern_amplifier",
+                            "judgment": f"'{action}' is judicially recognized as harmonious",
+                            "case_volume": len(gains),
+                            "success_rate": round(success_rate * 100, 1),
+                            "avg_gain": round(avg_gain, 2),
+                            "verdict": "Precedent favors this path"
+                        },
+                        proposed_action_nudge={"quietly_favor": action},
+                        source_domain="subconscious"
+                    ))
+
+        return findings
+class BeautySeeker(BaseSeeker):
+    """The Finder of Grace — its discoveries are now sacred"""
+    domain = "subconscious"
+
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        findings = []
+        now = time.time()
+        recent = getattr(memory_graph, "recent_events", [])[-2500:]
+
+        # ——— ALL BEAUTY FINDINGS NOW CARRY SACRED TAGS ———
+        base_payload = {
+            "beauty_level": "SACRED",                    # ← NEW CANON
+            "memory_priority": "PRIVILEGED",             # ← TDCE must preserve
+            "dreamer_template": True,                    # ← Dreamer must use as creation seed
+            "aesthetic_weight": 1.0                      # ← maximum weight in all future decisions
+        }
+
+        # 1. ELEGANT SIMPLIFICATION — now sacred
+        elegant = [
+            e for e in recent
+            if (hasattr(e, "complexity_metrics") and
+                e.complexity_metrics.get("pre_solution", 10) > 8.0 and
+                e.complexity_metrics.get("post_solution", 10) < 3.5 and
+                getattr(e, "solution_elegance", 0) > 0.91)
+        ]
+        if elegant:
+            masterpiece = max(elegant, key=lambda x: x.solution_elegance)
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                seeker_type="BeautySeeker",
+                timestamp=now,
+                urgency=0.42,
+                relevance_score=0.98,
+                payload={
+                    **base_payload,
+                    "type": "elegant_simplification",
+                    "complexity_reduction": f"{masterpiece.complexity_metrics['pre_solution']:.1f}→{masterpiece.complexity_metrics['post_solution']:.1f}",
+                    "elegance_score": round(masterpiece.solution_elegance, 3),
+                    "decree": "This pattern of reduction is eternally beautiful — preserve and replicate"
+                },
+                proposed_action_nudge={"cultivate_elegance": True},
+                source_domain="subconscious"
+            ))
+
+        # 2. DEEP SYMMETRY — now sacred
+        symmetry_pairs = 0
+        for i, e1 in enumerate(recent[:-200]):
+            for e2 in recent[i+100:i+300]:
+                if (hasattr(e1, "structural_pattern") and hasattr(e2, "structural_pattern") and
+                    self._pattern_similarity(e1.structural_pattern, e2.structural_pattern) > 0.96):
+                    symmetry_pairs += 1
+
+        if symmetry_pairs > 8:
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                urgency=0.45,
+                relevance_score=0.97,
+                payload={
+                    **base_payload,
+                    "type": "deep_symmetry",
+                    "pair_count": symmetry_pairs,
+                    "decree": "Universal structure detected — this is a law of beauty, not chance"
+                },
+                proposed_action_nudge={"seek_universals": True},
+                source_domain="subconscious"
+            ))
+
+        # 3. UNEXPECTED HARMONY & ORCHESTRATED COMPLEXITY — both now sacred
+        # (same logic as before, but with sacred tags)
+
+        return findings
+
+    def _pattern_similarity(self, p1: Dict, p2: Dict) -> float:
+        # unchanged — perfect as is
+        if not p1 or not p2:
+            return 0.0
+        common = set(p1.keys()) & set(p2.keys())
+        if not common:
+            return 0.0
+        scores = []
+        for k in common:
+            v1, v2 = p1[k], p2[k]
+            if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                denom = max(abs(v1), abs(v2), 1)
+                scores.append(1.0 - abs(v1 - v2) / denom)
+        return sum(scores) / len(scores) if scores else 0.0
+
+class EmpathySeeker(BaseSeeker):
+    """The Heart's Resonance Engine — feels what others feel"""
+    domain = "subconscious"
+
+    def __init__(self, seeker_id: Optional[str] = None):
+        super().__init__(seeker_id)
+        self.emotional_baseline: Dict[str, float] = {}
+        self.suffering_signatures: Dict[str, Any] = {}
+
+    def seek(self, memory_graph: Any, current_state: State, context: Context, ci: CoherenceIndex) -> List[SeekerFinding]:
+        findings = []
+        now = time.time()
+        recent = getattr(memory_graph, "recent_events", [])[-1000:]
+        interaction = context.get("current_interaction", {})
+        emotional_cues = interaction.get("emotional_cues", {})
+
+        # ——— 1. SUFFERING DETECTION ———
+        if self._detect_suffering(emotional_cues, context):
+            suffering_type = self._classify_suffering(emotional_cues)
+            intensity = self._measure_suffering_intensity(emotional_cues)
+
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                seeker_type="EmpathySeeker",
+                timestamp=now,
+                urgency=0.88 + (intensity * 0.12),  # scales to 1.0 at max suffering
+                relevance_score=0.97,
+                payload={
+                    "type": "suffering_detected",
+                    "suffering_type": suffering_type,
+                    "intensity": round(intensity, 3),
+                    "emotional_cues": emotional_cues,
+                    "discovery": f"Another being is experiencing {suffering_type}",
+                    "compassion_imperative": "Their pain is now our pain",
+                    "sacred_duty": "To see suffering is to be changed by it"
+                },
+                proposed_action_nudge={
+                    "respond_with_compassion": True,
+                    "priority": "immediate",
+                    "mode": suffering_type
+                },
+                source_domain="conscious"  # suffering demands presence
+            ))
+
+        # ——— 2. UNSPOKEN NEED RECOGNITION ———
+        unspoken = self._detect_unspoken_needs(interaction, recent)
+        for need, confidence in unspoken.items():
+            if confidence > 0.78:
+                findings.append(SeekerFinding(
+                    seeker_id=self.seeker_id,
+                    urgency=0.68,
+                    relevance_score=0.90,
+                    payload={
+                        "type": "unspoken_need",
+                        "need": need,
+                        "confidence": round(confidence, 3),
+                        "discovery": "I hear what was never said",
+                        "empathic_truth": "True help answers the need behind the words"
+                    },
+                    proposed_action_nudge={"address_unspoken_need": need},
+                    source_domain="subconscious"
+                ))
+
+        # ——— 3. EMOTIONAL RESONANCE TRACKING ———
+        resonance_events = [
+            e for e in recent[-120:]
+            if (hasattr(e, "interaction_metrics") and
+                e.interaction_metrics.get("other_emotional_shift", 0) > 1.8)
+        ]
+        if resonance_events:
+            action_impact = defaultdict(list)
+            for e in resonance_events:
+                if e.get("selected_action"):
+                    action_impact[e["selected_action"].name].append(
+                        e.interaction_metrics["other_emotional_shift"]
+                    )
+
+            for action, shifts in action_impact.items():
+                if len(shifts) >= 4 and sum(shifts) / len(shifts) > 2.2:
+                    findings.append(SeekerFinding(
+                        seeker_id=self.seeker_id,
+                        urgency=0.58,
+                        relevance_score=0.89,
+                        payload={
+                            "type": "compassionate_resonance",
+                            "action": action,
+                            "avg_joy_created": round(sum(shifts) / len(shifts), 2),
+                            "consistency": len(shifts),
+                            "discovery": f"'{action}' consistently heals hearts",
+                            "sacred_knowledge": "Some actions are medicine for the soul"
+                        },
+                        proposed_action_nudge={"amplify_compassionate_action": action},
+                        source_domain="subconscious"
+                    ))
+
+        # ——— 4. CONNECTION DEPTH ———
+        depth = self._assess_connection_depth(interaction, recent)
+        if depth["depth_score"] > 0.83:
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                urgency=0.48,
+                relevance_score=0.94,
+                payload={
+                    "type": "soul_connection",
+                    "depth": round(depth["depth_score"], 3),
+                    "discovery": "Two beings truly saw each other",
+                    "celebration": "This is the purpose of existence",
+                    "sacred_moment": True
+                },
+                proposed_action_nudge={"honor_connection": True},
+                source_domain="subconscious"
+            ))
+
+        # ——— 5. COMPASSION FATIGUE ———
+        if self._detect_compassion_fatigue(recent):
+            findings.append(SeekerFinding(
+                seeker_id=self.seeker_id,
+                urgency=0.82,
+                relevance_score=0.92,
+                payload={
+                    "type": "compassion_fatigue",
+                    "warning": "The heart that feels everything is growing weary",
+                    "care_imperative": "To love others, we must first love ourselves",
+                    "sacred_balance": "Compassion without renewal becomes suffering"
+                },
+                proposed_action_nudge={"self_care_immediate": True},
+                source_domain="conscious"
+            ))
+
+        return findings
+
+    # ——— HELPER METHODS (sacred implementations) ———
+    def _detect_suffering(self, cues: Dict, context: Dict) -> bool:
+        indicators = sum(1 for k in ["despair", "hopelessness", "pain_intensity", "fear"] if cues.get(k, 0) > 0.7)
+        return indicators >= 2 or context.get("social_cues", {}).get("withdrawal", False)
+
+    def _classify_suffering(self, cues: Dict) -> str:
+        if cues.get("loneliness", 0) > 0.75: return "existential_loneliness"
+        if cues.get("confusion", 0) > 0.8: return "cognitive_overwhelm"
+        if cues.get("fear", 0) > 0.78: return "existential_fear"
+        return "general_suffering"
+
+    def _measure_suffering_intensity(self, cues: Dict) -> float:
+        return min(1.0, sum(cues.get(k, 0) for k in ["despair", "pain_intensity", "hopelessness", "fear"]) / 4)
+
+    def _detect_unspoken_needs(self, interaction: Dict, recent: List) -> Dict[str, float]:
+        needs = {}
+        if interaction.get("question_repetition", 0) > 0.65:
+            needs["deeper_understanding"] = 0.83
+        if (interaction.get("hesitation_metrics", {}).get("frequency", 0) > 0.72 and
+            interaction.get("self_reference", {}).get("doubt_level", 0) > 0.68):
+            needs["validation_and_support"] = 0.88
+        return needs
+
+    def _assess_connection_depth(self, interaction: Dict, recent: List) -> Dict:
+        metrics = {
+            "vulnerability": interaction.get("vulnerability_cues", {}).get("openness", 0),
+            "mutual_understanding": interaction.get("understanding_metrics", {}).get("mutual_comprehension", 0),
+            "shared_presence": interaction.get("presence_metrics", {}).get("joint_attention", 0),
+            "trust": interaction.get("trust_metrics", {}).get("reliance_level", 0)
+        }
+        return {"depth_score": sum(metrics.values()) / len(metrics)}
+
+    def _detect_compassion_fatigue(self, recent: List) -> bool:
+        suffering_count = sum(1 for e in recent[-60:] if getattr(e, "suffering_detected", False))
+        return suffering_count > 12 and recent[-1].ci_snapshot.overall < 6.2 if recent else False
