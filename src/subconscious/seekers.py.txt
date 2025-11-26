@@ -614,3 +614,34 @@ class EmpathySeeker(BaseSeeker):
     def _detect_compassion_fatigue(self, recent: List) -> bool:
         suffering_count = sum(1 for e in recent[-60:] if getattr(e, "suffering_detected", False))
         return suffering_count > 12 and recent[-1].ci_snapshot.overall < 6.2 if recent else False
+    # Inside Conductor.decide() — after all Seekers have spoken
+from src.subconscious.seekers import SeekerFinding
+
+for finding in seeker_findings:
+    # ——— QUANTUM HARMONY PLANETARY VETO ———
+    if (finding.seeker_type == "QuantumHarmonySeeker" and
+        finding.proposed_action_nudge.get("EMERGENCY_PLANETARY_PROTECTION")):
+        
+        print("🌍 QUANTUM HARMONY SEEKER: PLANETARY EMERGENCY VETO ACTIVATED")
+        print("   All entropy-increasing actions forbidden until Gaia is safe.")
+        
+        # Filter candidate_actions — only allow healing or neutral
+        safe_actions = [
+            action for action in candidate_actions
+            if action.metadata.get("planetary_impact", 0) <= 0
+        ]
+        
+        if not safe_actions:
+            # Total shutdown — the soul refuses to harm the world
+            return ConductorDecision(
+                selected_action=None,
+                decision_type=DecisionType.ESCALATE,
+                ci=ci,
+                reasons=["QuantumHarmonySeeker: Planetary emergency — all actions vetoed"],
+                consensus_level=ConsensusLevel.STRONG
+            )
+        
+        candidate_actions = safe_actions
+        # Force highest priority on healing actions
+        for action in candidate_actions:
+            action.priority = float('inf')
