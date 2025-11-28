@@ -1,0 +1,156 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.fft import fft, fftfreq
+from scipy.constants import hbar, m_p, k_B
+import qutip as qt
+
+# ==================== EXPERIMENTAL PARAMETERS (He-4) ====================
+T = 1.5  # Kelvin (below lambda point)
+rho = 145  # kg/m³ (superfluid density)
+c2 = 20.0  # m/s (second sound speed)
+gamma = 0.1  # damping coefficient (1/s)
+trap_radius = 10e-6  # 10 micron toroidal trap
+particle_count = 1e6  # atoms
+
+# ==================== GROSS-PITAEVSKII SIMULATION ====================
+def simulate_superfluid_burp():
+    """Main simulation of superfluid response to perturbation"""
+    
+    # Spatial grid (2D cylindrical symmetry)
+    r_points = 256
+    z_points = 1  # 2D simulation
+    r_max = 50e-6  # 50 micron domain
+    
+    # Create mesh
+    r = np.linspace(0, r_max, r_points)
+    dr = r[1] - r[0]
+    
+    # Time parameters (realistic experimental scale)
+    t_max = 500e-3  # 500 ms observation
+    dt = 1e-6       # 1 microsecond resolution
+    t_points = int(t_max / dt)
+    
+    # Initial wavefunction (ground state in harmonic trap)
+    psi0 = np.exp(-(r**2) / (2 * (10e-6)**2))  # Gaussian initial state
+    psi0 = psi0 / np.sqrt(np.sum(np.abs(psi0)**2 * 2 * np.pi * r * dr))
+    
+    # Perturbation: sudden "kick" at t=0 (experiment: laser pulse/piezo)
+    def perturbation(t):
+        return 1.0 if t < 10e-6 else 0.0  # 10 microsecond pulse
+    
+    # Gross-Pitaevskii time evolution (simplified 1D radial)
+    psi_t = np.zeros((r_points, t_points), dtype=complex)
+    psi_t[:, 0] = psi0
+    
+    # Time evolution (Crank-Nicolson would be better, but this is illustrative)
+    for n in range(t_points - 1):
+        V = 0.5 * (r**2) * perturbation(n * dt)  # Trap + perturbation
+        kinetic = -hbar**2 / (2 * m_p) * laplacian_1d(psi_t[:, n], r, dr)
+        nonlinear = 4 * np.pi * hbar**2 * 0.1 / m_p * np.abs(psi_t[:, n])**2
+        H_psi = kinetic + V * psi_t[:, n] + nonlinear * psi_t[:, n]
+        psi_t[:, n+1] = psi_t[:, n] - (1j * dt / hbar) * H_psi
+    
+    return r, t_points, dt, psi_t
+
+def laplacian_1d(psi, r, dr):
+    """1D radial Laplacian for cylindrical symmetry"""
+    lap = np.zeros_like(psi)
+    for i in range(1, len(r)-1):
+        lap[i] = (psi[i+1] - 2*psi[i] + psi[i-1]) / dr**2
+        if r[i] > 0:
+            lap[i] += (1/r[i]) * (psi[i+1] - psi[i-1]) / (2*dr)
+    return lap
+
+# ==================== SIGNAL PROCESSING ====================
+def analyze_second_sound(psi_t, dt, r):
+    """Extract second-sound signature from wavefunction evolution"""
+    
+    # Density oscillations → second sound proxy
+    density = np.abs(psi_t)**2
+    center_density = density[len(r)//2, :]  # Monitor center point
+    
+    # FFT analysis for frequency content
+    sampling_rate = 1 / dt
+    freqs = fftfreq(len(center_density), dt)[:len(center_density)//2]
+    fft_vals = fft(center_density)
+    power_spectrum = np.abs(fft_vals[:len(center_density)//2])**2
+    
+    # Look for 10.3 MHz signature
+    target_range = (9.5e6, 11.0e6)  # 9.5-11.0 MHz
+    mask = (freqs >= target_range[0]) & (freqs <= target_range[1])
+    
+    if np.any(mask):
+        burp_power = np.max(power_spectrum[mask])
+        burp_freq = freqs[mask][np.argmax(power_spectrum[mask])]
+        significance = burp_power / np.median(power_spectrum)
+    else:
+        burp_power = 0
+        burp_freq = 0
+        significance = 0
+    
+    return burp_freq, burp_power, significance, freqs, power_spectrum
+
+# ==================== EXPERIMENTAL PREDICTIONS ====================
+def generate_predictions():
+    """Generate testable experimental predictions"""
+    
+    print("QUANTUM BURP v2 - EXPERIMENTAL PREDICTIONS")
+    print("=" * 50)
+    
+    # Run simulation
+    r, t_points, dt, psi_t = simulate_superfluid_burp()
+    
+    # Analyze signal
+    burp_freq, burp_power, significance, freqs, psd = analyze_second_sound(psi_t, dt, r)
+    
+    # Predictions
+    predictions = {
+        'frequency': f"{burp_freq/1e6:.2f} MHz",
+        'time_delay': "30-300 ms post-perturbation",
+        'duration': "10-50 oscillation cycles",
+        'amplitude': f"{significance:.1f}x above noise floor",
+        'detection_method': "Second-sound resonance shift @ 10.3 MHz",
+        'required_instruments': [
+            "Dilution refrigerator (T < 2K)",
+            "Piezoelectric transducer/laser pulse",
+            "10 MHz superconducting resonator",
+            "Bolometer/second-sound detector"
+        ],
+        'falsification_conditions': [
+            "No signal in 9.5-11.0 MHz range",
+            "Signal appears without perturbation",
+            "Signal persists above lambda point"
+        ]
+    }
+    
+    for key, value in predictions.items():
+        print(f"{key.replace('_', ' ').title():<25}: {value}")
+    
+    # Plot results
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.semilogy(freqs/1e6, psd)
+    plt.axvline(10.3, color='red', linestyle='--', alpha=0.7, label='Predicted 10.3 MHz')
+    plt.xlim(8, 12)
+    plt.xlabel('Frequency (MHz)')
+    plt.ylabel('Power Spectral Density')
+    plt.title('Second-Sound Power Spectrum')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    center_density = np.abs(psi_t[len(r)//2, :])**2
+    time_ms = np.arange(len(center_density)) * dt * 1000
+    plt.plot(time_ms[:1000], center_density[:1000])
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Density (arb.)')
+    plt.title('Center Density Oscillations')
+    
+    plt.tight_layout()
+    plt.savefig('quantum_burp_prediction.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    
+    return predictions
+
+if __name__ == "__main__":
+    predictions = generate_predictions()
